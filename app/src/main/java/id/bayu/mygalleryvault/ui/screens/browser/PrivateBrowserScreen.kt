@@ -212,12 +212,33 @@ fun PrivateBrowserScreen(
             allowContentAccess = false
             mediaPlaybackRequiresUserGesture = true
             javaScriptCanOpenWindowsAutomatically = false
+            // REQUIRED for onCreateWindow() to fire; without this, target=_blank
+            // / window.open() popups navigate THIS webview directly (newtab ads).
+            setSupportMultipleWindows(true)
         }
         wv.isSaveEnabled = false
 
         wv.webViewClient = object : WebViewClient() {
-            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
-                request.url.scheme?.equals("https", ignoreCase = true) != true
+            override fun shouldOverrideUrlLoading(
+                view: WebView,
+                request: WebResourceRequest,
+            ): Boolean {
+                val scheme = request.url.scheme?.lowercase()
+                if (scheme != "https") return true
+                // Main-frame redirect into a known ad/tracker host or URL pattern:
+                // count and refuse, otherwise the popup hijack wins the tab.
+                if (shieldsOn(tabId) && request.isForMainFrame &&
+                    request.url.host !in hostWhitelist
+                ) {
+                    val blocked = ShieldBlocker.isBlocked(request.url) ||
+                        ShieldBlocker.matchesPathRule(request.url.toString().lowercase())
+                    if (blocked) {
+                        ShieldBlocker.increment(tabId)
+                        return true
+                    }
+                }
+                return false
+            }
 
             override fun shouldInterceptRequest(
                 view: WebView,

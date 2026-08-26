@@ -6,8 +6,11 @@ import id.bayu.mygalleryvault.R
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.IOException
+import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import javax.net.ssl.HttpsURLConnection
 
 /**
  * Brave-Shields style ad/tracker blocker for the private browser (PRD §38).
@@ -106,9 +109,11 @@ object ShieldBlocker {
         }
         // Built-in conservative path patterns.
         listOf(
-            "/pagead/", "/adservice/", "/adserver/", "/adframe.", "/popunder",
-            "/prebid", "/gpt.js", "/pubfig/", "/adrequest", "/show_ad",
-            "/banner_ad", "/ad-delivery", "/ads.js", "/advert.",
+            "/pagead/", "/pagead2", "/adservice/", "/adserver/", "/adframe.", "/popunder",
+            "/prebid", "/prebid.js", "/gpt.js", "/pubfig/", "/adrequest", "/show_ad",
+            "/show_ads", "/banner_ad", "/ad-delivery", "/ads.js", "/advert.",
+            "/adsbygoogle", "/doubleclick", "/adx/", "/adserv", "/getads",
+            "/300x250_", "/728x90_", "/468x60_", "/160x600_", "/interstitial.",
         ).forEach { pathRules.add(it) }
     }
 
@@ -119,32 +124,100 @@ object ShieldBlocker {
                 userFile.bufferedReader()
                     .useLines { lines ->
                         for (rawLine in lines) {
-                            val line = rawLine.substringBefore('#').trim().lowercase()
+                            val line = stripComment(rawLine).trim().lowercase()
                             if (line.isEmpty()) continue
-                            if (line.contains('/')) pathRules.add(line)
+                            when {
+                                // AdGuard/EasyList host rule: ||domain^$options
+                                line.startsWith("||") ->
+                                    extractDomain(rawLine)?.let { domains.add(it) }
+
+                                // URL-substring rule ("/pagead/") or plain domain.
+                                else -> {
+                                    val base = line.substringBefore('$').trim()
+                                    if (base.contains('/')) pathRules.add(base)
+                                    else extractDomain(rawLine)?.let { domains.add(it) }
+                                }
+                            }
                         }
                     }
-                // hosts-style entries merged through the normal parser
-                userFile.bufferedReader()
-                    .useLines { lines -> parseAndMerge(lines.filter { !it.contains('/') }) }
             }
         }
     }
 
+    /** Removes trailing comment (#...) and skips AdGuard '!' headers. */
+    private fun stripComment(raw: String): String {
+        val noHash = raw.substringBefore('#')
+        return if (noHash.trimStart().startsWith("!")) "" else noHash
+    }
+
+    /**
+     * Normalizes any supported syntax into a bare lowercase domain:
+     * hosts ("0.0.0.0 ads.x.com"), plain domains, and AdGuard/EasyList
+     * "||domain^" rules ($ options stripped, @@ exceptions ignored).
+     * Returns null when the line yields no blockable domain.
+     */
+    fun extractDomain(rawLine: String): String? {
+        var line = stripComment(rawLine).trim()
+        if (line.isEmpty() || line.startsWith("@@")) return null
+        line = line.substringBefore('$').trim()
+        if (line.isEmpty()) return null
+        if (line.startsWith("||")) {
+            val d = line.removePrefix("||")
+                .substringBefore('^').substringBefore('*')
+                .substringBefore('/')
+                .lowercase()
+            return d.takeIf { HOST_REGEX.matches(it) }
+        }
+        val host = line.split(Regex("\\s+")).last().lowercase()
+        return host.takeIf { HOST_REGEX.matches(it) }
+    }
+
     /**
      * Parses hosts-format lines: `0.0.0.0 ads.example.com`, `::1 x`,
-     * plain `example.com`; comments (#...) and blanks are skipped.
+     * plain `example.com`, or AdGuard/EasyList `||example.com^`.
+     * Comments (#, !), blanks and @@ exceptions are skipped.
      * Returns number of NEW entries added.
      */
     fun parseAndMerge(lines: Sequence<String>): Int {
         var added = 0
         for (rawLine in lines) {
-            val line = rawLine.substringBefore('#').trim()
-            if (line.isEmpty()) continue
-            val host = line.split(Regex("\\s+")).last().lowercase()
-            if (!HOST_REGEX.matches(host)) continue
+            val host = extractDomain(rawLine) ?: continue
             if (domains.add(host)) added++
         }
+        return added
+    }
+
+    /**
+     * Downloads a remote hosts/blocklist over HTTPS and merges it into the
+     * persistent user blocklist. Accepts hosts format, plain domains, and
+     * AdGuard/EasyList "||domain^" rules. Returns number of NEW domains.
+     */
+    suspend fun importFromUrl(context: Context, rawUrl: String): Int {
+        val url = rawUrl.trim()
+        require(url.startsWith("https://", ignoreCase = true)) { "Hanya URL https" }
+        val text = withContext(Dispatchers.IO) {
+            var conn: HttpsURLConnection? = null
+            try {
+                conn = (URL(url).openConnection() as HttpsURLConnection).apply {
+                    connectTimeout = 15_000
+                    readTimeout = 30_000
+                    instanceFollowRedirects = true
+                    setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 10) SecureVaultShield/1.0")
+                }
+                val code = conn.responseCode
+                if (code !in 200..299) throw IOException("HTTP $code")
+                conn.inputStream.bufferedReader().use { it.readText() }
+            } finally {
+                conn?.disconnect()
+            }
+        }
+        val added = parseAndMerge(text.lineSequence())
+        if (added > 0 || text.isNotBlank()) {
+            val file = userBlocklistFile(context)
+            file.parentFile?.mkdirs()
+            file.appendText(text.trimEnd() + "\n")
+        }
+        reload(context)
         return added
     }
 

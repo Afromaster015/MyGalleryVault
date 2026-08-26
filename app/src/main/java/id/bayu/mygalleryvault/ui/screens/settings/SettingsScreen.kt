@@ -141,6 +141,7 @@ fun SettingsScreen(
     // ---- browser prefs ----
     var showSearchEnginePicker by remember { mutableStateOf(false) }
     var showAddRuleDialog by remember { mutableStateOf(false) }
+    var showImportUrlDialog by remember { mutableStateOf(false) }
     val blocklistImportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -451,6 +452,12 @@ fun SettingsScreen(
             )
 
             SettingsRow(
+                title = "Impor blocklist dari URL",
+                subtitle = "AdGuard DNS, StevenBlack, OISD, AdAway & lainnya (ratusan ribu domain)",
+                onClick = { showImportUrlDialog = true },
+            )
+
+            SettingsRow(
                 title = "Tambah rule blokir manual",
                 subtitle = "Domain (contoh: ads.example.com) atau potongan URL (/pagead/)",
                 onClick = { showAddRuleDialog = true },
@@ -617,6 +624,91 @@ fun SettingsScreen(
                 }, enabled = ruleText.isNotBlank()) { Text("Tambah") }
             },
             dismissButton = { TextButton(onClick = { showAddRuleDialog = false }) { Text("Batal") } },
+        )
+    }
+
+    if (showImportUrlDialog) {
+        var customUrl by rememberSaveable { mutableStateOf("") }
+        var importingUrl by remember { mutableStateOf(false) }
+
+        fun runImport(urlStr: String) {
+            val trimmed = urlStr.trim()
+            if (!trimmed.startsWith("https://", ignoreCase = true)) {
+                Toast.makeText(activity, "URL harus https://", Toast.LENGTH_SHORT).show()
+                return
+            }
+            importingUrl = true
+            scope.launch {
+                try {
+                    val added = withContext(Dispatchers.IO) {
+                        id.bayu.mygalleryvault.core.browser.ShieldBlocker.importFromUrl(
+                            activity, trimmed
+                        )
+                    }
+                    Toast.makeText(activity, "$added domain baru diblokir", Toast.LENGTH_LONG).show()
+                    showImportUrlDialog = false
+                } catch (e: Exception) {
+                    Toast.makeText(activity, "Impor gagal: ${e.message}", Toast.LENGTH_SHORT).show()
+                } finally {
+                    importingUrl = false
+                }
+            }
+        }
+
+        AlertDialog(
+            onDismissRequest = { if (!importingUrl) showImportUrlDialog = false },
+            title = { Text("Impor blocklist dari URL") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        "Unduh daftar blokir publik (format hosts / AdGuard ||domain^). " +
+                            "Daftar besar memakan waktu beberapa saat.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    BLOCKLIST_SOURCES.forEach { source ->
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = !importingUrl) { runImport(source.url) }
+                                .padding(vertical = 6.dp),
+                        ) {
+                            Text(source.label, style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                source.desc,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedTextField(
+                        value = customUrl,
+                        onValueChange = { customUrl = it },
+                        singleLine = true,
+                        enabled = !importingUrl,
+                        label = { Text("Atau URL kustom (https://...)") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    if (importingUrl) {
+                        Spacer(Modifier.height(6.dp))
+                        LinearProgressIndicator(Modifier.fillMaxWidth())
+                        Text("Mengunduh...", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { runImport(customUrl) },
+                    enabled = !importingUrl && customUrl.isNotBlank(),
+                ) { Text("Impor URL kustom") }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showImportUrlDialog = false },
+                    enabled = !importingUrl,
+                ) { Text("Tutup") }
+            },
         )
     }
 
@@ -1294,3 +1386,44 @@ private fun ChangePinDialog(
         dismissButton = { TextButton(onClick = onDismiss) { Text("Batal") } },
     )
 }
+
+/** Curated public ad/tracker blocklists importable over HTTPS. */
+private data class BlocklistSource(val label: String, val desc: String, val url: String)
+
+private val BLOCKLIST_SOURCES = listOf(
+    BlocklistSource(
+        "AdGuard DNS filter",
+        "~150rb domain; sintaks AdGuard ||domain^ (didukung penuh)",
+        "https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt",
+    ),
+    BlocklistSource(
+        "StevenBlack hosts",
+        "Gabungan 40+ sumber populer (~130rb domain)",
+        "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
+    ),
+    BlocklistSource(
+        "OISD small",
+        "Kurasi anti-iklan ringan, minim false positive",
+        "https://small.oisd.nl/",
+    ),
+    BlocklistSource(
+        "AdAway default",
+        "Daftar standar AdAway (~12rb domain)",
+        "https://adaway.org/hosts.txt",
+    ),
+    BlocklistSource(
+        "Peter Lowe's list",
+        "Blocklist klasik adservers & trackers",
+        "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=0&mimetype=plaintext",
+    ),
+    BlocklistSource(
+        "anudeepND adservers",
+        "Ad servers & trackers terkurasi (~15rb domain)",
+        "https://raw.githubusercontent.com/anudeepND/blacklist/master/adservers.txt",
+    ),
+    BlocklistSource(
+        "URLhaus malicious",
+        "Domain malware/penyebar iklan berbahaya (online)",
+        "https://malware-filter.gitlab.io/malware-filter/urlhaus-filter-hosts-online.txt",
+    ),
+)

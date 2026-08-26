@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Backspace
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
@@ -31,7 +32,7 @@ fun PinKeypad(
         listOf("123", "456", "789").forEach { rowDigits ->
             Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
                 rowDigits.forEach { d ->
-                    FilledTonalIconButton(onClick = { onDigit(d) }, enabled = enabled) {
+                    FilledTonalIconButton(onClick = { onDigit(d) }, enabled = enabled, shape = CircleShape) {
                         Text(d.toString(), style = MaterialTheme.typography.titleLarge)
                     }
                 }
@@ -45,7 +46,7 @@ fun PinKeypad(
             } else {
                 androidx.compose.foundation.layout.Spacer(Modifier.size(48.dp))
             }
-            FilledTonalIconButton(onClick = { onDigit('0') }, enabled = enabled) {
+            FilledTonalIconButton(onClick = { onDigit('0') }, enabled = enabled, shape = CircleShape) {
                 Text("0", style = MaterialTheme.typography.titleLarge)
             }
             IconButton(onClick = onSubmit, enabled = enabled) {

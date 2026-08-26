@@ -5,10 +5,10 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -50,7 +50,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
@@ -60,6 +59,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -346,9 +346,14 @@ fun HomeScreen(
         },
         floatingActionButton = {
             if (!inSelection) {
-                FloatingActionButton(onClick = {
-                    AutoLockManager.launchWithoutAutoLock { importLauncher.launch(arrayOf("*/*")) }
-                }) {
+                FloatingActionButton(
+                    onClick = {
+                        AutoLockManager.launchWithoutAutoLock { importLauncher.launch(arrayOf("*/*")) }
+                    },
+                    shape = CircleShape,
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                ) {
                     if (importing) CircularProgressIndicator(Modifier.height(20.dp))
                     else Icon(Icons.Rounded.Add, contentDescription = "Impor file")
                 }
@@ -763,11 +768,12 @@ private fun FolderTile(
     onLongPress: (Long, String) -> Unit,
 ) {
     val borderColor = if (isSelected) MaterialTheme.colorScheme.primary
-    else MaterialTheme.colorScheme.surfaceVariant
-    ElevatedCard(
-        modifier = Modifier
-            .fillMaxWidth()
-            .border(2.dp, borderColor, MaterialTheme.shapes.medium)
+    else MaterialTheme.colorScheme.outlineVariant
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        border = BorderStroke(if (isSelected) 2.dp else 1.dp, borderColor),
     ) {
         Box {
             Column(
@@ -818,11 +824,12 @@ private fun FileTile(
         value = vm.thumbnailFor(file.id, file.hasThumbnail)
     }
     val borderColor = if (isSelected) MaterialTheme.colorScheme.primary
-    else MaterialTheme.colorScheme.surfaceVariant
-    ElevatedCard(
-        modifier = Modifier
-            .fillMaxWidth()
-            .border(2.dp, borderColor, MaterialTheme.shapes.medium)
+    else MaterialTheme.colorScheme.outlineVariant
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        border = BorderStroke(if (isSelected) 2.dp else 1.dp, borderColor),
     ) {
         Box {
             Column(
