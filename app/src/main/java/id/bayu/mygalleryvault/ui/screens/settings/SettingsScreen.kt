@@ -254,54 +254,61 @@ fun SettingsScreen(
             )
 
             if (isRealSession) {
-                BiometricRow(
-                    enabled = biometricEnabled,
-                    activity = activity,
-                    onEnableRequest = {
-                        scope.launch {
-                            try {
-                                val request = container.authRepository.prepareBiometricEnable()
-                                withContext(Dispatchers.Main) {
-                                    BiometricHelper.authenticate(
-                                        activity = activity,
-                                        title = "Aktifkan biometrik",
-                                        subtitle = "Kunci vault akan diikat ke biometrik Anda",
-                                        negativeText = "Batal",
-                                        cryptoObject = BiometricPrompt.CryptoObject(request.cipher),
-                                        onSuccess = {
-                                            scope.launch {
-                                                try {
-                                                    container.authRepository.completeBiometricEnable(request)
-                                                    container.authRepository.setBiometricAllowed(true)
-                                                } catch (e: Exception) {
-                                                    Toast.makeText(
-                                                        activity,
-                                                        "Gagal: ${e.message}",
-                                                        Toast.LENGTH_SHORT,
-                                                    ).show()
+                if (biometricEnabled) {
+                    BiometricRow(
+                        enabled = biometricEnabled,
+                        activity = activity,
+                        onEnableRequest = { /* already enabled, no-op */ },
+                        onDisable = {
+                            scope.launch {
+                                container.authRepository.disableBiometric()
+                                container.authRepository.setBiometricAllowed(false)
+                            }
+                        },
+                    )
+                } else {
+                    BiometricEnableRow(
+                        activity = activity,
+                        onEnableRequest = {
+                            scope.launch {
+                                try {
+                                    val request = container.authRepository.prepareBiometricEnable()
+                                    withContext(Dispatchers.Main) {
+                                        BiometricHelper.authenticate(
+                                            activity = activity,
+                                            title = "Aktifkan biometrik",
+                                            subtitle = "Kunci vault akan diikat ke biometrik Anda",
+                                            negativeText = "Batal",
+                                            cryptoObject = BiometricPrompt.CryptoObject(request.cipher),
+                                            onSuccess = {
+                                                scope.launch {
+                                                    try {
+                                                        container.authRepository.completeBiometricEnable(request)
+                                                        container.authRepository.setBiometricAllowed(true)
+                                                    } catch (e: Exception) {
+                                                        Toast.makeText(
+                                                            activity,
+                                                            "Gagal: ${e.message}",
+                                                            Toast.LENGTH_SHORT,
+                                                        ).show()
+                                                    }
                                                 }
-                                            }
-                                        },
-                                        onFailure = { msg ->
-                                            Toast.makeText(activity, msg, Toast.LENGTH_SHORT).show()
-                                        },
-                                    )
-                                }
-                            } catch (_: Exception) {
-                                withContext(Dispatchers.Main) {
-                                    Toast.makeText(activity, "Biometrik tidak tersedia", Toast.LENGTH_SHORT)
-                                        .show()
+                                            },
+                                            onFailure = { msg ->
+                                                Toast.makeText(activity, msg, Toast.LENGTH_SHORT).show()
+                                            },
+                                        )
+                                    }
+                                } catch (_: Exception) {
+                                    withContext(Dispatchers.Main) {
+                                        Toast.makeText(activity, "Biometrik tidak tersedia", Toast.LENGTH_SHORT)
+                                            .show()
+                                    }
                                 }
                             }
-                        }
-                    },
-                    onDisable = {
-                        scope.launch {
-                            container.authRepository.disableBiometric()
-                            container.authRepository.setBiometricAllowed(false)
-                        }
-                    },
-                )
+                        },
+                    )
+                }
             }
 
             SettingsRow(
@@ -1099,16 +1106,41 @@ private fun BiometricRow(
             Column(Modifier.weight(1f)) {
                 Text("Buka dengan biometrik", style = MaterialTheme.typography.bodyLarge)
                 Text(
-                    if (!available) "Perangkat tidak mendukung biometrik kuat"
-                    else "Gunakan sidik jari sebagai alternatif PIN",
+                    "Gunakan sidik jari sebagai alternatif PIN",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
             Switch(
                 checked = enabled,
                 onCheckedChange = { checked -> if (checked) onEnableRequest() else onDisable() },
-                enabled = available || enabled,
+                enabled = true,
             )
+        }
+    }
+}
+
+@Composable
+private fun BiometricEnableRow(
+    activity: FragmentActivity,
+    onEnableRequest: () -> Unit,
+) {
+    val available by produceState(initialValue = false) {
+        value = BiometricHelper.canUseBiometrics(activity)
+    }
+    if (available) {
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onEnableRequest)
+                    .padding(14.dp),
+            ) {
+                Text("Aktifkan biometrik", style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    "Gunakan sidik jari sebagai alternatif PIN",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
         }
     }
 }

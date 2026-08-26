@@ -123,6 +123,32 @@ class VaultStorage(private val context: Context, slotDir: String? = null) {
 
     fun objectSize(encryptedName: String): Long = File(objectsDir, encryptedName).length()
 
+    /**
+     * Detects the actual encryption version from the file header.
+     * This is needed because the DB version might not match the actual file format
+     * (e.g., files imported with v1 DB flag but v2 actual format).
+     */
+    fun detectEncryptionVersion(encryptedName: String): Int {
+        val f = File(objectsDir, encryptedName)
+        if (!f.exists()) return 2
+        return try {
+            java.io.RandomAccessFile(f, "r").use { raf ->
+                val header = ByteArray(6)
+                raf.readFully(header)
+                // Check magic "SVLT"
+                if (header[0] == 0x53.toByte() && header[1] == 0x56.toByte() &&
+                    header[2] == 0x4C.toByte() && header[3] == 0x54.toByte()
+                ) {
+                    header[4].toInt() // version byte
+                } else {
+                    2 // default to v2 if can't detect
+                }
+            }
+        } catch (_: Exception) {
+            2 // default to v2 on error
+        }
+    }
+
     fun deleteObject(encryptedName: String) {
         File(objectsDir, encryptedName).delete()
     }

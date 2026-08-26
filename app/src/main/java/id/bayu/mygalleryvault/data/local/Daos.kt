@@ -37,6 +37,12 @@ interface VaultFileDao {
     @Query("UPDATE vault_files SET encryptedName = :newName, encryptionVersion = :version WHERE id = :id")
     suspend fun swapEncryptedObject(id: Long, newName: String, version: Int)
 
+    @Query("UPDATE vault_files SET encryptionVersion = :version WHERE id = :id")
+    suspend fun setEncryptionVersion(id: Long, version: Int)
+
+    @Query("SELECT * FROM vault_files WHERE encryptionVersion < 2 AND mimeType LIKE 'video/%'")
+    suspend fun allLegacyVideos(): List<VaultFileEntity>
+
     @Query("UPDATE vault_files SET thumbRef = :ref WHERE id = :id")
     suspend fun setThumbRef(id: Long, ref: String?)
 

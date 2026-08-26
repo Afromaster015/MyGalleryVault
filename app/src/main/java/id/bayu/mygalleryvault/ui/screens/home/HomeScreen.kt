@@ -176,6 +176,9 @@ fun HomeScreen(
         val target = exportTarget
         if (uri != null && target != null) {
             vm.exportFile(target.id, uri)
+        } else if (target != null) {
+            // SAF failed or cancelled - fallback to Downloads via MediaStore
+            vm.exportToDownloads(target.id, target.name)
         }
         exportTarget = null
     }
@@ -440,8 +443,20 @@ fun HomeScreen(
                     TextButton(onClick = {
                         exportTarget = data.file
                         actionSheetFor = null
-                        AutoLockManager.launchWithoutAutoLock { exportLauncher.launch(data.file.name) }
+                        AutoLockManager.launchWithoutAutoLock {
+                            exportLauncher.launch(
+                                id.bayu.mygalleryvault.data.repository.VaultRepository
+                                    .safeExportName(data.file.name)
+                            )
+                        }
                     }) { Text("Export / Unhide") }
+                    TextButton(onClick = {
+                        actionSheetFor = null
+                        vm.exportToDownloads(
+                            data.file.id,
+                            id.bayu.mygalleryvault.data.repository.VaultRepository.safeExportName(data.file.name)
+                        )
+                    }) { Text("Simpan ke Download") }
                     TextButton(onClick = {
                         moveTarget = data.file
                         actionSheetFor = null
@@ -726,33 +741,81 @@ private fun BreakInAlertDialog(
 data class ActionSheetData(val file: VaultFile)
 
 private fun openExternally(vm: HomeViewModel, activity: FragmentActivity, file: VaultFile) {
-    vm.decryptedBytes(file.id) { result ->
-        result.onSuccess { bytes ->
-            try {
-                val context = activity
-                val outFile = DecryptedShare.writeForSharing(context, file.name, bytes)
-                context.startActivity(DecryptedShare.openWithIntent(context, outFile, file.mimeType))
-            } catch (e: Exception) {
-                Toast.makeText(activity, "Gagal membuka: ${e.message}", Toast.LENGTH_SHORT).show()
+    if (file.isVideo || file.size > 50L * 1024 * 1024) {
+        // For large files, use streaming to avoid OOM
+        val context = activity
+        val dir = DecryptedShare.shareDir(context)
+        dir.listFiles()?.forEach { it.delete() }
+        val safeName = file.name.replace(Regex("[^A-Za-z0-9._ ()-]"), "_")
+        val outFile = java.io.File(dir, safeName)
+        vm.streamDecryptedTo(file.id, outFile.outputStream()) { result ->
+            result.onSuccess {
+                try {
+                    context.startActivity(DecryptedShare.openWithIntent(context, outFile, file.mimeType))
+                } catch (e: Exception) {
+                    activity.runOnUiThread {
+                        Toast.makeText(activity, "Gagal membuka: ${e.message}", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }.onFailure {
+                activity.runOnUiThread {
+                    Toast.makeText(activity, "Gagal mendekripsi: ${it.message}", Toast.LENGTH_SHORT).show()
+                }
             }
-        }.onFailure {
-            Toast.makeText(activity, "Gagal mendekripsi: ${it.message}", Toast.LENGTH_SHORT).show()
+        }
+    } else {
+        vm.decryptedBytes(file.id) { result ->
+            result.onSuccess { bytes ->
+                try {
+                    val context = activity
+                    val outFile = DecryptedShare.writeForSharing(context, file.name, bytes)
+                    context.startActivity(DecryptedShare.openWithIntent(context, outFile, file.mimeType))
+                } catch (e: Exception) {
+                    Toast.makeText(activity, "Gagal membuka: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            }.onFailure {
+                Toast.makeText(activity, "Gagal mendekripsi: ${it.message}", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 }
 
 private fun shareExternally(vm: HomeViewModel, activity: FragmentActivity, file: VaultFile) {
-    vm.decryptedBytes(file.id) { result ->
-        result.onSuccess { bytes ->
-            try {
-                val context = activity
-                val outFile = DecryptedShare.writeForSharing(context, file.name, bytes)
-                context.startActivity(DecryptedShare.shareIntent(context, outFile, file.mimeType))
-            } catch (e: Exception) {
-                Toast.makeText(activity, "Gagal membagikan: ${e.message}", Toast.LENGTH_SHORT).show()
+    if (file.isVideo || file.size > 50L * 1024 * 1024) {
+        // For large files, use streaming to avoid OOM
+        val context = activity
+        val dir = DecryptedShare.shareDir(context)
+        dir.listFiles()?.forEach { it.delete() }
+        val safeName = file.name.replace(Regex("[^A-Za-z0-9._ ()-]"), "_")
+        val outFile = java.io.File(dir, safeName)
+        vm.streamDecryptedTo(file.id, outFile.outputStream()) { result ->
+            result.onSuccess {
+                try {
+                    context.startActivity(DecryptedShare.shareIntent(context, outFile, file.mimeType))
+                } catch (e: Exception) {
+                    activity.runOnUiThread {
+                        Toast.makeText(activity, "Gagal membagikan: ${e.message}", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }.onFailure {
+                activity.runOnUiThread {
+                    Toast.makeText(activity, "Gagal mendekripsi: ${it.message}", Toast.LENGTH_SHORT).show()
+                }
             }
-        }.onFailure {
-            Toast.makeText(activity, "Gagal mendekripsi: ${it.message}", Toast.LENGTH_SHORT).show()
+        }
+    } else {
+        vm.decryptedBytes(file.id) { result ->
+            result.onSuccess { bytes ->
+                try {
+                    val context = activity
+                    val outFile = DecryptedShare.writeForSharing(context, file.name, bytes)
+                    context.startActivity(DecryptedShare.shareIntent(context, outFile, file.mimeType))
+                } catch (e: Exception) {
+                    Toast.makeText(activity, "Gagal membagikan: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            }.onFailure {
+                Toast.makeText(activity, "Gagal mendekripsi: ${it.message}", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 }

@@ -31,6 +31,7 @@ import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.FileDownload
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.SaveAlt
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Subtitles
@@ -89,6 +90,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.IOException
 
 /** Resume positions live for the current app process only (keputusan #1). */
 object ResumePositions {
@@ -119,6 +121,7 @@ fun VideoPlayerScreen(
     var ready by remember { mutableStateOf(false) }
     var errorText by remember { mutableStateOf<String?>(null) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
+    var isV2 by remember { mutableStateOf(false) }
 
     var controlsVisible by remember { mutableStateOf(true) }
     var isPlaying by remember { mutableStateOf(false) }
@@ -149,7 +152,13 @@ fun VideoPlayerScreen(
     LaunchedEffect(entity?.id) {
         val e = entity ?: return@LaunchedEffect
         fileName = e.name
-        if (e.encryptionVersion >= 2) {
+        // Auto-detect actual format from file header instead of trusting DB version
+        val storage = app.container.currentStack().storage
+        val actualVersion = withContext(Dispatchers.IO) {
+            storage.detectEncryptionVersion(e.encryptedName)
+        }
+        isV2 = actualVersion >= 2
+        if (isV2) {
             ready = true
         } else {
             try {
@@ -169,9 +178,9 @@ fun VideoPlayerScreen(
 
     // duration probe (v2 only; legacy reads from temp later)
     var probeDone by remember { mutableStateOf(false) }
-    LaunchedEffect(entity?.id, legacyReady) {
+    LaunchedEffect(entity?.id, legacyReady, isV2) {
         val e = entity ?: return@LaunchedEffect
-        if (e.encryptionVersion >= 2) {
+        if (isV2) {
             durationMs = repo.probeVideoDurationMs(e.id) ?: 0L
             probeDone = true
         } else {
@@ -202,7 +211,11 @@ fun VideoPlayerScreen(
         } ?: return@LaunchedEffect
         val encName = repo.encryptedNameOf(match.id) ?: return@LaunchedEffect
         val mime = VaultRepository.subtitleMime(match.name) ?: return@LaunchedEffect
-        val uri = if (match.encryptionVersion >= 2) {
+        // Auto-detect subtitle format from file header
+        val subIsV2 = withContext(Dispatchers.IO) {
+            app.container.currentStack().storage.detectEncryptionVersion(encName) >= 2
+        }
+        val uri = if (subIsV2) {
             vaultUri(encName)
         } else {
             val tmp = File(activity.cacheDir, "vsub_${match.id}_${System.currentTimeMillis()}.tmp")
@@ -283,9 +296,8 @@ fun VideoPlayerScreen(
     }
 
     // prepare once duration is known / legacy temp ready; rebuild on subtitle changes
-    LaunchedEffect(ready, legacyReady, probeDone, activeSubs, selectedSubId) {
+    LaunchedEffect(ready, legacyReady, probeDone, activeSubs, selectedSubId, isV2) {
         val e = entity ?: return@LaunchedEffect
-        val isV2 = e.encryptionVersion >= 2
         if (!isV2 && !legacyReady) return@LaunchedEffect
         if (isV2 && !probeDone) return@LaunchedEffect
 
@@ -373,21 +385,55 @@ fun VideoPlayerScreen(
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/octet-stream")
     ) { uri ->
-        if (uri != null) {
-            scope.launch {
-                try {
+        scope.launch {
+            try {
+                if (uri != null) {
                     if (legacyTemp != null) {
                         withContext(Dispatchers.IO) {
                             activity.contentResolver.openOutputStream(uri)?.use { out ->
                                 legacyTemp!!.inputStream().use { it.copyTo(out) }
-                            }
+                            } ?: throw IOException("Tidak dapat membuka tujuan export")
                         }
                     } else {
                         repo.exportFile(fileId, uri)
                     }
                     Toast.makeText(activity, "File diekspor", Toast.LENGTH_SHORT).show()
-                } catch (e: Exception) {
-                    Toast.makeText(activity, "Export gagal: ${e.message}", Toast.LENGTH_SHORT).show()
+                } else {
+                    // SAF file picker returned null (cancelled or broken) - fallback to Downloads
+                    val e = entity ?: return@launch
+                    val safeName = e.name.ifBlank { "video.mp4" }
+                    repo.exportToDownloads(fileId, safeName)
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(activity, "File disimpan ke folder Downloads", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        activity,
+                        "Export gagal (${e.javaClass.simpleName}): ${e.message}",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+            }
+        }
+    }
+
+    fun exportToDownloads() {
+        val e = entity ?: return
+        scope.launch {
+            try {
+                repo.exportToDownloads(e.id, e.name)
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(activity, "Tersimpan di folder Download", Toast.LENGTH_SHORT).show()
+                }
+            } catch (ex: Exception) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        activity,
+                        "Export gagal (${ex.javaClass.simpleName}): ${ex.message}",
+                        Toast.LENGTH_LONG,
+                    ).show()
                 }
             }
         }
@@ -401,8 +447,13 @@ fun VideoPlayerScreen(
                         legacyTemp!!.inputStream().use { it.copyTo(out) }
                     }
                 } else {
-                    val bytes = repo.readDecryptedBytes(fileId)
-                    id.bayu.mygalleryvault.ui.components.DecryptedShare.writeForSharing(activity, fileName, bytes)
+                    // Stream decryption directly to share file instead of loading all into memory
+                    val e = entity ?: throw IllegalStateException("File tidak ditemukan")
+                    val storage = app.container.currentStack().storage
+                    val key = VaultSession.masterKey ?: throw IllegalStateException("Vault terkunci")
+                    id.bayu.mygalleryvault.ui.components.DecryptedShare.writeForSharing(activity, fileName) { out ->
+                        storage.openDecrypted(e.encryptedName, key, out)
+                    }
                 }
                 withContext(Dispatchers.Main) {
                     activity.startActivity(
@@ -639,12 +690,18 @@ fun VideoPlayerScreen(
                         IconButton(onClick = { showDeleteConfirm = true }) {
                             Icon(Icons.Rounded.Delete, "Hapus", tint = Color.White)
                         }
+                        IconButton(onClick = ::exportToDownloads) {
+                            Icon(Icons.Rounded.SaveAlt, "Simpan ke Download", tint = Color.White)
+                        }
                         IconButton(onClick = {
                             id.bayu.mygalleryvault.core.lock.AutoLockManager.launchWithoutAutoLock {
-                                exportLauncher.launch(fileName.ifBlank { "video.mp4" })
+                                exportLauncher.launch(
+                                    id.bayu.mygalleryvault.data.repository.VaultRepository
+                                        .safeExportName(fileName.ifBlank { "video.mp4" })
+                                )
                             }
                         }) {
-                            Icon(Icons.Rounded.FileDownload, "Export", tint = Color.White)
+                            Icon(Icons.Rounded.FileDownload, "Export pilih lokasi", tint = Color.White)
                         }
                         IconButton(onClick = { shareVideo() }) {
                             Icon(Icons.Rounded.Share, "Bagikan", tint = Color.White)
@@ -696,8 +753,14 @@ fun VideoPlayerScreen(
                             scope.launch {
                                 val encName = repo.encryptedNameOf(vf.id)
                                 val mime = VaultRepository.subtitleMime(vf.name)
+                                // Auto-detect subtitle format from file header
+                                val subIsV2 = if (encName != null) {
+                                    withContext(Dispatchers.IO) {
+                                        app.container.currentStack().storage.detectEncryptionVersion(encName) >= 2
+                                    }
+                                } else false
                                 val built = if (encName != null && mime != null) {
-                                    if (vf.encryptionVersion >= 2) {
+                                    if (subIsV2) {
                                         ActiveSubtitle(id, vf.name, vaultUri(encName), mime)
                                     } else {
                                         try {

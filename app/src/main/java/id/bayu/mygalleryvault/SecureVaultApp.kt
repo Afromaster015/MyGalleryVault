@@ -32,6 +32,11 @@ class SecureVaultApp : Application() {
             if (container.authRepository.isDecoyCreated) {
                 runCatching { container.decoyStack().repository.reconcileStorage() }
             }
+            // One-time fix: correct DB encryptionVersion for files that are actually v2 on disk
+            runCatching { container.realStack().repository.fixLegacyDbRecords() }
+            if (container.authRepository.isDecoyCreated) {
+                runCatching { container.decoyStack().repository.fixLegacyDbRecords() }
+            }
         }
     }
 }

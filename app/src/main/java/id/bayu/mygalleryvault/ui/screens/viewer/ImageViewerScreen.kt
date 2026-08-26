@@ -15,6 +15,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.FileDownload
+import androidx.compose.material.icons.rounded.SaveAlt
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -84,11 +85,49 @@ fun ImageViewerScreen(
                     repo.exportFile(fileId, uri)
                     Toast.makeText(activity, "File diekspor", Toast.LENGTH_SHORT).show()
                 } catch (e: Exception) {
-                    Toast.makeText(activity, "Export gagal: ${e.message}", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(
+                        activity,
+                        "Export gagal (${e.javaClass.simpleName}): ${e.message}",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+            }
+        } else if (fileId > 0) {
+            val safeName = (fileName ?: "export.jpg")
+            scope.launch {
+                try {
+                    repo.exportToDownloads(fileId, safeName)
+                    Toast.makeText(activity, "File disimpan ke folder Downloads", Toast.LENGTH_SHORT).show()
+                } catch (e: Exception) {
+                    Toast.makeText(
+                        activity,
+                        "Export gagal (${e.javaClass.simpleName}): ${e.message}",
+                        Toast.LENGTH_LONG,
+                    ).show()
                 }
             }
         }
         exportTargetName = null
+    }
+
+    fun exportToDownloads() {
+        val name = fileName ?: "export.jpg"
+        scope.launch {
+            try {
+                repo.exportToDownloads(fileId, name)
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(activity, "Tersimpan di folder Download", Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        activity,
+                        "Export gagal (${e.javaClass.simpleName}): ${e.message}",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+            }
+        }
     }
 
     fun shareImage() {
@@ -140,12 +179,18 @@ fun ImageViewerScreen(
             IconButton(onClick = { shareImage() }) {
                 Icon(Icons.Rounded.Share, "Bagikan", tint = Color.White)
             }
+            IconButton(onClick = { exportToDownloads() }) {
+                Icon(Icons.Rounded.SaveAlt, "Simpan ke Download", tint = Color.White)
+            }
             IconButton(onClick = {
                 id.bayu.mygalleryvault.core.lock.AutoLockManager.launchWithoutAutoLock {
-                    exportLauncher.launch(fileName ?: "export.jpg")
+                    exportLauncher.launch(
+                        id.bayu.mygalleryvault.data.repository.VaultRepository
+                            .safeExportName(fileName ?: "export.jpg")
+                    )
                 }
             }) {
-                Icon(Icons.Rounded.FileDownload, "Export", tint = Color.White)
+                Icon(Icons.Rounded.FileDownload, "Export pilih lokasi", tint = Color.White)
             }
             IconButton(onClick = { showDeleteConfirm = true }) {
                 Icon(Icons.Rounded.Delete, "Hapus", tint = Color.White)

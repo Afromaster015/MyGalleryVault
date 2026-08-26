@@ -88,15 +88,13 @@ object CryptoEngine {
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, nonce))
         CipherInputStream(raw, cipher).use { cin ->
-            output.use { cout ->
-                val buf = ByteArray(DEFAULT_BUFFER_SIZE * 8)
-                while (true) {
-                    val read = cin.read(buf)
-                    if (read == -1) break
-                    cout.write(buf, 0, read)
-                }
-                cout.flush()
+            val buf = ByteArray(DEFAULT_BUFFER_SIZE * 8)
+            while (true) {
+                val read = cin.read(buf)
+                if (read == -1) break
+                output.write(buf, 0, read)
             }
+            output.flush()
         }
     }
 

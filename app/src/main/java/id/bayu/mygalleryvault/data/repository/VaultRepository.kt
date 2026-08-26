@@ -145,7 +145,7 @@ class VaultRepository(
                         folderId = targetFolderId,
                         createdAt = now,
                         modifiedAt = now,
-                        encryptionVersion = 1,
+                        encryptionVersion = 2,
                         thumbRef = thumbRef,
                     )
                 )
@@ -216,7 +216,7 @@ class VaultRepository(
                         folderId = targetFolderId,
                         createdAt = now,
                         modifiedAt = now,
-                        encryptionVersion = 1,
+                        encryptionVersion = 2,
                         thumbRef = null,
                     )
                 )
@@ -251,19 +251,99 @@ class VaultRepository(
     }
 
     /**
+     * Export a file directly to the public Downloads folder using MediaStore.
+     * Works reliably on emulators and devices where SAF CreateDocument may fail.
+     * Returns the content URI of the saved file, or throws on failure.
+     */
+    suspend fun exportToDownloads(fileId: Long, displayName: String): Uri {
+        val key = checkNotNull(VaultSession.masterKey) { "Vault terkunci" }
+        val entity = fileDao.byId(fileId) ?: throw IOException("File tidak ditemukan")
+        return withContext(Dispatchers.IO) {
+            val resolver = context.contentResolver
+            val mimeType = entity.mimeType.ifBlank { "application/octet-stream" }
+            val safeName = safeExportName(displayName)
+
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                val values = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.Downloads.DISPLAY_NAME, safeName)
+                    put(android.provider.MediaStore.Downloads.MIME_TYPE, mimeType)
+                    put(android.provider.MediaStore.Downloads.IS_PENDING, 1)
+                }
+                val uri = try {
+                    resolver.insert(
+                        android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
+                    )
+                } catch (e: Exception) {
+                    throw IOException("Gagal membuat file di Downloads: ${e.message}")
+                } ?: throw IOException("Tidak dapat membuat file di Downloads")
+
+                try {
+                    resolver.openOutputStream(uri)?.use { out ->
+                        storage.openDecrypted(entity.encryptedName, key, out)
+                    } ?: throw IOException("Tidak dapat menulis ke Downloads")
+
+                    values.clear()
+                    values.put(android.provider.MediaStore.Downloads.IS_PENDING, 0)
+                    resolver.update(uri, values, null, null)
+                } catch (e: Exception) {
+                    runCatching { resolver.delete(uri, null, null) }
+                    throw e
+                }
+                uri
+            } else {
+                val dir = java.io.File(context.getExternalFilesDir(null), "Download")
+                if (!dir.exists()) dir.mkdirs()
+                var outFile = java.io.File(dir, safeName)
+                var n = 1
+                while (outFile.exists()) {
+                    val base = safeName.substringBeforeLast('.', safeName)
+                    val ext = safeName.substringAfterLast('.', "")
+                    outFile = java.io.File(dir, "$base($n)." + if (ext.isBlank()) "bin" else ext)
+                    n++
+                }
+                outFile.outputStream().buffered().use { out ->
+                    storage.openDecrypted(entity.encryptedName, key, out)
+                }
+                android.net.Uri.fromFile(outFile)
+            }
+        }
+    }
+
+    /**
      * Bulk-export convenience: creates a document named after the file inside
      * [treeUri] (user-picked directory) and decrypts into it. SAF appends
      * " (1)" automatically on name collisions.
+     *
+     * NOTE: [DocumentsContract.createDocument] rejects the raw tree URI on
+     * several providers ("Invalid URI", e.g. externalstorage.documents with a
+     * folder name containing spaces). The tree URI must first be converted to
+     * the root document URI via buildDocumentUriUsingTree.
      */
     suspend fun exportIntoDir(fileId: Long, treeUri: Uri): Boolean {
         val entity = fileDao.byId(fileId) ?: return false
         val resolver = context.contentResolver
-        val docUri = android.provider.DocumentsContract.createDocument(
-            resolver,
-            treeUri,
-            entity.mimeType.ifBlank { "application/octet-stream" },
-            entity.originalName,
-        ) ?: return false
+
+        // Convert ".../tree/<rootId>" -> ".../document/<rootId>".
+        val parentDocUri: Uri = if (treeUri.pathSegments.firstOrNull() == "tree") {
+            try {
+                val treeDocId = android.provider.DocumentsContract.getTreeDocumentId(treeUri)
+                if (treeDocId.isNullOrBlank()) return false
+                android.provider.DocumentsContract.buildDocumentUriUsingTree(treeUri, treeDocId)
+            } catch (_: Exception) {
+                return false
+            }
+        } else {
+            treeUri
+        }
+
+        val docUri = runCatching {
+            android.provider.DocumentsContract.createDocument(
+                resolver,
+                parentDocUri,
+                entity.mimeType.ifBlank { "application/octet-stream" },
+                safeExportName(entity.originalName),
+            )
+        }.getOrNull() ?: return false
         exportFile(fileId, docUri)
         return true
     }
@@ -273,6 +353,15 @@ class VaultRepository(
         val key = checkNotNull(VaultSession.masterKey) { "Vault terkunci" }
         val entity = fileDao.byId(fileId) ?: throw IOException("File tidak ditemukan")
         return withContext(Dispatchers.IO) { storage.readDecrypted(entity.encryptedName, key) }
+    }
+
+    /** Streaming decryption directly to an OutputStream, for large files. */
+    suspend fun streamDecryptedTo(fileId: Long, output: java.io.OutputStream) {
+        val key = checkNotNull(VaultSession.masterKey) { "Vault terkunci" }
+        val entity = fileDao.byId(fileId) ?: throw IOException("File tidak ditemukan")
+        withContext(Dispatchers.IO) {
+            storage.openDecrypted(entity.encryptedName, key, output)
+        }
     }
 
     /**
@@ -352,8 +441,10 @@ class VaultRepository(
     suspend fun generateVideoThumbnail(fileId: Long): Boolean {
         val entity = fileDao.byId(fileId) ?: return false
         if (!entity.mimeType.startsWith("video/") || entity.thumbRef != null) return false
-        if (entity.encryptionVersion < 2) return false
         val key = checkNotNull(VaultSession.masterKey) { "Vault terkunci" }
+        // Auto-detect actual format from file header instead of trusting DB version
+        val actualVersion = storage.detectEncryptionVersion(entity.encryptedName)
+        if (actualVersion < 2) return false
         return withContext(Dispatchers.IO) {
             try {
                 storage.openRandomReader(entity.encryptedName, key).use { reader ->
@@ -381,8 +472,11 @@ class VaultRepository(
     /** Duration in ms via ranged decryption; null when unavailable. */
     suspend fun probeVideoDurationMs(fileId: Long): Long? {
         val entity = fileDao.byId(fileId) ?: return null
-        if (!entity.mimeType.startsWith("video/") || entity.encryptionVersion < 2) return null
+        if (!entity.mimeType.startsWith("video/")) return null
         val key = checkNotNull(VaultSession.masterKey) { "Vault terkunci" }
+        // Auto-detect actual format from file header instead of trusting DB version
+        val actualVersion = storage.detectEncryptionVersion(entity.encryptedName)
+        if (actualVersion < 2) return null
         return withContext(Dispatchers.IO) {
             try {
                 storage.openRandomReader(entity.encryptedName, key).use { reader ->
@@ -487,6 +581,34 @@ class VaultRepository(
             it.thumbRef?.let { ref -> validThumbs.add(ref) }
         }
         storage.reconcileOrphans(validObjects, validThumbs)
+    }
+
+    /**
+     * One-time fix for files that were imported with encryptionVersion=1 in DB
+     * but are actually v2 on disk (because CryptoEngine.encryptStream writes v2).
+     * Corrects the DB version based on the actual file header.
+     */
+    suspend fun fixLegacyDbRecords() {
+        val legacyFiles = fileDao.allLegacy()
+        for (entity in legacyFiles) {
+            val actualVersion = storage.detectEncryptionVersion(entity.encryptedName)
+            if (actualVersion != entity.encryptionVersion) {
+                fileDao.setEncryptionVersion(entity.id, actualVersion)
+            }
+        }
+    }
+
+    /**
+     * Generate missing video thumbnails for v2 files that don't have one yet.
+     * Must be called after vault is unlocked (needs masterKey).
+     */
+    suspend fun generateMissingVideoThumbnails() {
+        val allFiles = fileDao.allOnce()
+        for (entity in allFiles) {
+            if (entity.mimeType.startsWith("video/") && entity.thumbRef == null) {
+                runCatching { generateVideoThumbnail(entity.id) }
+            }
+        }
     }
 
     // ---------- helpers ----------
@@ -596,6 +718,12 @@ class VaultRepository(
     companion object {
         const val THUMB_SIZE = 256
         val SUBTITLE_EXTENSIONS = setOf("srt", "vtt", "ass", "ssa", "ttml")
+
+        /** Removes characters that make SAF/MediaStore reject a display name. */
+        fun safeExportName(name: String): String {
+            val cleaned = name.replace(Regex("[\\\\/:*?\"<>|\\x00-\\x1F]"), "_").trim()
+            return cleaned.ifBlank { "file_${System.currentTimeMillis()}" }
+        }
 
         fun subtitleMime(fileName: String): String? {
             val ext = fileName.substringAfterLast('.', "").lowercase()

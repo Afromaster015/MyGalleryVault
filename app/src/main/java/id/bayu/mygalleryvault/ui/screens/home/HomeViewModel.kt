@@ -48,6 +48,10 @@ class HomeViewModel(
         viewModelScope.launch {
             _folderName.value = repo.folderName(folderId)
         }
+        // Generate missing video thumbnails in background (requires masterKey which is available after unlock)
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { repo.generateMissingVideoThumbnails() }
+        }
     }
 
     fun setSort(option: SortOption) {
@@ -97,7 +101,18 @@ class HomeViewModel(
                 repo.exportFile(fileId, destUri)
                 _message.value = "File diekspor"
             } catch (e: Exception) {
-                _message.value = "Export gagal: ${e.message}"
+                _message.value = "Export gagal (${e.javaClass.simpleName}): ${e.message}"
+            }
+        }
+    }
+
+    fun exportToDownloads(fileId: Long, displayName: String) {
+        viewModelScope.launch {
+            try {
+                repo.exportToDownloads(fileId, displayName)
+                _message.value = "File disimpan ke folder Download"
+            } catch (e: Exception) {
+                _message.value = "Export gagal (${e.javaClass.simpleName}): ${e.message}"
             }
         }
     }
@@ -176,6 +191,15 @@ class HomeViewModel(
     fun decryptedBytes(fileId: Long, onResult: (Result<ByteArray>) -> Unit) {
         viewModelScope.launch {
             onResult(runCatching { repo.readDecryptedBytes(fileId) })
+        }
+    }
+
+    /** Streaming decryption to an OutputStream, for large files that shouldn't be fully loaded into memory. */
+    fun streamDecryptedTo(fileId: Long, output: java.io.OutputStream, onResult: (Result<Unit>) -> Unit) {
+        viewModelScope.launch {
+            onResult(runCatching {
+                repo.streamDecryptedTo(fileId, output)
+            })
         }
     }
 
