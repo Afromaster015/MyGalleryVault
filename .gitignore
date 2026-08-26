@@ -19,3 +19,4 @@ PRD.md
 *.jks
 *.keystore
 *.pem
+.idea/
