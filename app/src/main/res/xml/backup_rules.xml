@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Vault data must never be backed up to cloud (PRD §49 privacy). -->
+<full-backup-content>
+    <exclude domain="file" path="vault" />
+    <exclude domain="file" path="keys" />
+    <exclude domain="database" path="." />
+</full-backup-content>

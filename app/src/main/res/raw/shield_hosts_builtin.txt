@@ -1,0 +1,147 @@
+# SecureVault Shield - built-in starter blocklist (root domains; subdomains inherit)
+# Conservative curation of major ad & tracking ecosystems. Extend via
+# Settings > Browser > Impor blocklist (hosts format).
+# --- Google ads / analytics ---
+doubleclick.net
+googlesyndication.com
+googleadservices.com
+googletagservices.com
+adservice.google.com
+admob.com
+google-analytics.com
+googletagmanager.com
+ads.youtube.com
+# --- Social pixels ---
+facebook.net
+ads-twitter.com
+static.ads-twitter.com
+ads.tiktok.com
+analytics.tiktok.com
+log.byteoversea.com
+snap.licdn.com
+ads.linkedin.com
+alb.reddit.com
+events.redditmedia.com
+ct.pinterest.com
+ads.pinterest.com
+# --- Amazon ---
+amazon-adsystem.com
+# --- Major ad exchanges / SSP / DSP ---
+adnxs.com
+criteo.com
+criteo.net
+rubiconproject.com
+pubmatic.com
+openx.net
+casalemedia.com
+sharethrough.com
+teads.tv
+smartadserver.com
+adform.net
+yieldmo.com
+33across.com
+crwdcntrl.net
+bidswitch.net
+indexww.com
+sovrn.com
+liadm.com
+gumgum.com
+spotxchange.com
+triplelift.com
+sonobi.com
+kargo.com
+media.net
+adroll.com
+bidr.io
+moatads.com
+moatad.com
+adsafeprotected.com
+# --- Native/content ads ---
+taboola.com
+outbrain.com
+revcontent.com
+mgid.com
+zergnet.com
+# --- Pop/redirect networks ---
+popads.net
+popcash.net
+propellerads.com
+propu.sh
+pemsrv.com
+exoclick.com
+adcash.com
+hilltopads.net
+# --- Analytics / session recording ---
+scorecardresearch.com
+quantserve.com
+quantcount.com
+chartbeat.com
+chartbeat.net
+hotjar.com
+hotjar.io
+fullstory.com
+mouseflow.com
+logrocket.com
+smartlook.com
+luckyorange.com
+crazyegg.com
+clicktale.net
+statcounter.com
+histats.com
+mixpanel.com
+segment.io
+segment.com
+amplitude.com
+heapanalytics.com
+optimizely.com
+visualwebsiteoptimizer.com
+abtasty.com
+kissmetrics.com
+matomo.cloud
+cloudflareinsights.com
+nr-data.net
+# --- Identity / data brokers ---
+bluekai.com
+bkrtx.com
+demdex.net
+omtrdc.net
+everesttech.net
+agkn.com
+tapad.com
+drawbridge.com
+id5-sync.com
+adsco.re
+liveramp.com
+rlcdn.com
+merkle.com
+# --- Attribution / mobile measurement ---
+appsflyer.com
+adjust.com
+kochava.com
+branch.io
+tenjin.io
+singular.net
+# --- International trackers ---
+mc.yandex.ru
+ymetrica.com
+hm.baidu.com
+cnzz.com
+mmstat.com
+growingio.com
+# --- Misc ad infra ---
+zedo.com
+adtechus.com
+adtech.de
+sitescout.com
+undertone.com
+sharethrough.com
+smartclip.net
+springserve.com
+freewheel.tv
+spotxchange.net
+teads.com
+yieldlab.net
+improvedigital.com
+adyoulike.com
+seedtag.com
+mediafuse.com
