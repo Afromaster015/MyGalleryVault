@@ -976,7 +976,7 @@ class VaultRepository(
 }
 
 /** Throttles high-frequency byte callbacks to a UI-friendly rate. */
-private class ByteProgressPublisher(private val sink: (done: Long, total: Long) -> Unit) {
+internal class ByteProgressPublisher(private val sink: (done: Long, total: Long) -> Unit) {
 
     private var lastMs = 0L
     private var lastFrac = -1f
@@ -1017,7 +1017,7 @@ private class ByteProgressPublisher(private val sink: (done: Long, total: Long) 
  * updates the counter and checks the cancel flag, so even the middle of a huge
  * copy aborts immediately instead of waiting for the file to finish.
  */
-private class ProgressInputStream(
+internal class ProgressInputStream(
     private val source: java.io.InputStream,
     private val totalBytes: Long,
     private val emit: (done: Long, total: Long) -> Unit,
@@ -1055,7 +1055,7 @@ private class ProgressInputStream(
 }
 
 /** Output-side progress + cancellation for exports (decrypt path writes through here). */
-private class ProgressOutputStream(
+internal class ProgressOutputStream(
     private val sink: java.io.OutputStream,
     private val totalBytes: Long,
     private val publisher: ByteProgressPublisher,
@@ -1087,7 +1087,7 @@ private class ProgressOutputStream(
 }
 
 /** Cancellation-only passthrough used when no percent tracking is requested. */
-private class CancelCheckingOutputStream(
+internal class CancelCheckingOutputStream(
     private val sink: java.io.OutputStream,
     private val cancelled: () -> Boolean,
 ) : java.io.OutputStream() {

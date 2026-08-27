@@ -6,6 +6,10 @@ import java.io.IOException
 enum class TransferKind {
     IMPORT,
     EXPORT,
+    /** Encrypted .svbackup export (Settings → Backup). */
+    BACKUP,
+    /** Encrypted .svbackup restore/re-import into this device. */
+    RESTORE,
 }
 
 /**

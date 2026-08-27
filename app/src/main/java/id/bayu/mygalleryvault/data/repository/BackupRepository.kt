@@ -12,6 +12,10 @@ import id.bayu.mygalleryvault.core.storage.VaultStorage
 import id.bayu.mygalleryvault.VaultStack
 import id.bayu.mygalleryvault.data.local.FolderEntity
 import id.bayu.mygalleryvault.data.local.VaultFileEntity
+import id.bayu.mygalleryvault.domain.model.CancelledSignal
+import id.bayu.mygalleryvault.domain.model.TransferCancelledException
+import id.bayu.mygalleryvault.domain.model.TransferKind
+import id.bayu.mygalleryvault.domain.model.TransferProgress
 import id.bayu.mygalleryvault.domain.model.VaultSlot
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -57,13 +61,15 @@ class BackupRepository(private val context: Context) {
 
     // ---------- Export (HP 1 -> .svbackup) ----------
 
-    @Throws(BackupException::class)
+    @Throws(BackupException::class, TransferCancelledException::class)
     suspend fun exportBackup(
         dest: OutputStream,
         pin: CharArray,
         slot: VaultSlot,
         stack: VaultStack,
         keyManager: VaultKeyManager,
+        onProgress: ((TransferProgress) -> Unit)? = null,
+        isCancelled: (() -> Boolean)? = null,
     ): BackupSummary = withContext(Dispatchers.IO) {
         val master = runCatching { keyManager.unlockWithPin(pin, slot) }.getOrNull()
             ?: throw BackupException("PIN salah atau file backup tidak valid")
@@ -72,43 +78,92 @@ class BackupRepository(private val context: Context) {
 
         val files = stack.repository.allFilesOnce()
         val folders = stack.repository.allFoldersOnce()
+        val thumbOwners = files.filter { it.thumbRef != null }
+            .associateBy({ it.thumbRef!! }, { it.originalName })
+        val totalItems = files.size + thumbOwners.size + 1 // + metadata block
+
+        fun publish(done: Long, size: Long, index: Int, name: String) {
+            onProgress?.invoke(
+                TransferProgress(
+                    kind = TransferKind.BACKUP,
+                    totalItems = totalItems,
+                    completedItems = index,
+                    currentItemName = name,
+                    currentItemIndex = index + 1,
+                    itemBytesDone = done,
+                    itemBytesTotal = size,
+                )
+            )
+        }
 
         try {
             dest.use { raw ->
                 java.io.BufferedOutputStream(raw, 256 * 1024).use { out ->
+                    val trackedOut: OutputStream =
+                        when {
+                            onProgress != null || isCancelled != null ->
+                                CancelCheckingOutputStream(out, isCancelled ?: { false })
+
+                            else -> out
+                        }
                     val salt = BackupCodec.newSalt()
                     val header = BackupCodec.Header(salt, BackupCodec.DEFAULT_ITERATIONS)
-                    BackupCodec.writeHeader(out, salt, BackupCodec.DEFAULT_ITERATIONS)
-                    BackupCodec.writeWrappedMaster(out, header, pin, masterRaw)
+                    publish(0, 0, 0, "Metadata vault")
+                    BackupCodec.writeHeader(trackedOut, salt, BackupCodec.DEFAULT_ITERATIONS)
+                    BackupCodec.writeWrappedMaster(trackedOut, header, pin, masterRaw)
                     BackupCodec.writeEncryptedBlock(
-                        out,
+                        trackedOut,
                         buildMetadataJson(files, folders).toByteArray(Charsets.UTF_8),
                         master,
                     )
 
-                    var totalBytes = 0L
+                    val pub = ByteProgressPublisher { done, size ->
+                        publish(done, size, 0, "Metadata vault")
+                    }
+
+                    var index = 0
                     for (file in files) {
+                        if (isCancelled?.invoke() == true) throw CancelledSignal()
                         val src = File(stack.storage.objectsDir, file.encryptedName)
                         if (!src.exists()) continue // crash-recovery gap; skip rather than fail whole export
-                        totalBytes += src.length()
-                        src.inputStream().buffered().use {
-                            BackupCodec.writeItem(out, BackupCodec.OBJECT_PREFIX + file.encryptedName, it, src.length())
+                        val srcLen = src.length()
+                        index++
+                        val itemIndex = index
+                        val emit = ByteProgressPublisher { done, size ->
+                            publish(done, size, itemIndex, file.originalName)
                         }
+                        val counted = ProgressInputStream(src.inputStream().buffered(), srcLen, { d: Long, t: Long -> emit(d, t) }, isCancelled)
+                        BackupCodec.writeItem(
+                            trackedOut,
+                            BackupCodec.OBJECT_PREFIX + file.encryptedName,
+                            counted,
+                            srcLen,
+                        )
                     }
                     val writtenThumbs = HashSet<String>()
                     for (file in files) {
                         val ref = file.thumbRef ?: continue
                         if (!writtenThumbs.add(ref)) continue
+                        if (isCancelled?.invoke() == true) throw CancelledSignal()
                         val src = File(stack.storage.thumbsDir, ref)
                         if (!src.exists()) continue
-                        totalBytes += src.length()
-                        src.inputStream().buffered().use {
-                            BackupCodec.writeItem(out, BackupCodec.THUMB_PREFIX + ref, it, src.length())
+                        val srcLen = src.length()
+                        index++
+                        val itemIndex = index
+                        val thumbName = "Thumbnail ${thumbOwners[ref] ?: file.originalName}"
+                        val emit = ByteProgressPublisher { done, size ->
+                            publish(done, size, itemIndex, thumbName)
                         }
+                        val counted = ProgressInputStream(src.inputStream().buffered(), srcLen, { d: Long, t: Long -> emit(d, t) }, isCancelled)
+                        BackupCodec.writeItem(
+                            trackedOut, BackupCodec.THUMB_PREFIX + ref, counted, srcLen,
+                        )
                     }
-                    BackupCodec.writeTerminator(out)
+                    BackupCodec.writeTerminator(trackedOut)
                 }
             }
+        } catch (c: CancelledSignal) {
+            throw TransferCancelledException(0, "Backup dibatalkan")
         } catch (e: BackupException) {
             throw e
         } catch (e: Exception) {
@@ -119,13 +174,14 @@ class BackupRepository(private val context: Context) {
 
     // ---------- Restore (.svbackup -> current device, re-encrypted) ----------
 
-    @Throws(BackupException::class)
+    @Throws(BackupException::class, TransferCancelledException::class)
     suspend fun restoreBackup(
         source: InputStream,
         originalPin: CharArray,
         renameConflicts: Boolean,
         stack: VaultStack,
-        onProgress: (processed: Int, total: Int) -> Unit,
+        onProgress: ((TransferProgress) -> Unit)? = null,
+        isCancelled: (() -> Boolean)? = null,
     ): RestoreResult = withContext(Dispatchers.IO) {
         val targetKey = VaultSession.masterKey
             ?: throw BackupException("Vault tujuan terkunci")
@@ -155,6 +211,34 @@ class BackupRepository(private val context: Context) {
                 }
                 val totalItems = filesJson.length() + thumbRefs.size
 
+                // Original names are available from metadata BEFORE body items
+                // stream in, so the progress dialog can show real filenames.
+                val displayNames = HashMap<String, String>()
+                for (i in 0 until filesJson.length()) {
+                    val f = filesJson.getJSONObject(i)
+                    val enc = f.optString("encName", "")
+                    val name = f.optString("name", enc)
+                    if (enc.isNotEmpty()) displayNames[BackupCodec.OBJECT_PREFIX + enc] = name
+                    val tref = f.optString("thumbRef", "")
+                    if (tref.isNotEmpty()) displayNames[BackupCodec.THUMB_PREFIX + tref] =
+                        "Thumbnail $name"
+                }
+
+                fun publish(done: Long, size: Long, processed: Int, name: String) {
+                    onProgress?.invoke(
+                        TransferProgress(
+                            kind = TransferKind.RESTORE,
+                            totalItems = totalItems,
+                            completedItems = processed,
+                            currentItemName = name,
+                            currentItemIndex = processed + 1,
+                            itemBytesDone = done,
+                            itemBytesTotal = size,
+                        )
+                    )
+                }
+                if (totalItems > 0) publish(0, 0, 0, displayNames.values.firstOrNull() ?: "...")
+
                 val folderMap = HashMap<Long, Long?>() // old id -> new id
                 createFoldersRespectingParentOrder(foldersJson, stack, folderMap, createdFolderIds)
 
@@ -165,14 +249,24 @@ class BackupRepository(private val context: Context) {
                 var processed = 0
 
                 while (true) {
-                    val returnedPath = BackupCodec.readItem(input) { path, data, _ ->
+                    val returnedPath = BackupCodec.readItem(input) { path, data, size ->
+                        if (isCancelled?.invoke() == true) throw CancelledSignal()
+                        val name = displayNames[path] ?: path
+                        val emit = ByteProgressPublisher { done, total ->
+                            publish(done, total, processed, name)
+                        }
+                        publish(0, size, processed, name)
+                        val counted =
+                            if (onProgress != null || isCancelled != null) {
+                                ProgressInputStream(data, size, { d: Long, t: Long -> emit(d, t) }, isCancelled)
+                            } else data
                         when {
                             path.startsWith(BackupCodec.OBJECT_PREFIX) -> {
                                 val oldName = path.removePrefix(BackupCodec.OBJECT_PREFIX)
                                 val tmp = File.createTempFile("svr", ".tmp", context.cacheDir)
                                 try {
                                     tmp.outputStream().buffered().use { fos ->
-                                        decryptVerified(data, fos, hp1Master)
+                                        decryptVerified(counted, fos, hp1Master)
                                     }
                                     val (newName, plainSize) = stack.storage.importStream(tmp.inputStream(), targetKey)
                                     objMap[oldName] = newName to plainSize
@@ -184,7 +278,7 @@ class BackupRepository(private val context: Context) {
                             path.startsWith(BackupCodec.THUMB_PREFIX) -> {
                                 val oldRef = path.removePrefix(BackupCodec.THUMB_PREFIX)
                                 val bos = ByteArrayOutputStream()
-                                decryptVerified(data, bos, hp1Master)
+                                decryptVerified(counted, bos, hp1Master)
                                 val newRef = stack.storage.saveThumbnail(bos.toByteArray(), targetKey)
                                 thumbMap[oldRef] = newRef
                                 createdThumbs.add(newRef)
@@ -196,7 +290,7 @@ class BackupRepository(private val context: Context) {
                             }
                         }
                         processed++
-                        onProgress(processed, totalItems)
+                        publish(size, size, processed, name)
                     }
                     if (returnedPath == null) break
                 }
@@ -244,6 +338,15 @@ class BackupRepository(private val context: Context) {
                 )
                 }
             }
+        } catch (c: CancelledSignal) {
+            rollback(createdObjects, createdThumbs, createdFolderIds, stack)
+            throw TransferCancelledException(
+                createdObjects.size,
+                "Restore dibatalkan (data parsial dibersihkan)",
+            )
+        } catch (e: TransferCancelledException) {
+            rollback(createdObjects, createdThumbs, createdFolderIds, stack)
+            throw e
         } catch (e: BackupException) {
             rollback(createdObjects, createdThumbs, createdFolderIds, stack)
             throw e

@@ -36,6 +36,8 @@ fun TransferProgressDialog(
     val title = when (progress.kind) {
         TransferKind.IMPORT -> "Mengimpor ke vault..."
         TransferKind.EXPORT -> "Mengekspor dari vault..."
+        TransferKind.BACKUP -> "Membuat backup terenkripsi..."
+        TransferKind.RESTORE -> "Memulihkan backup..."
     }
     val itemFraction = progress.itemFraction
 

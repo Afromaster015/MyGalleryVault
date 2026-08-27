@@ -67,6 +67,8 @@ import id.bayu.mygalleryvault.data.repository.AuthRepository
 import id.bayu.mygalleryvault.domain.model.AutoLockOption
 import id.bayu.mygalleryvault.domain.model.SearchEngine
 import id.bayu.mygalleryvault.domain.model.ShakeSensitivity
+import id.bayu.mygalleryvault.domain.model.TransferCancelledException
+import id.bayu.mygalleryvault.domain.model.TransferProgress
 import id.bayu.mygalleryvault.domain.model.VaultSlot
 import id.bayu.mygalleryvault.ui.components.BiometricHelper
 import id.bayu.mygalleryvault.ui.components.FormatUtil
@@ -126,11 +128,13 @@ fun SettingsScreen(
     var pendingBackupUri by remember { mutableStateOf<Uri?>(null) }
     var pendingRestoreUri by remember { mutableStateOf<Uri?>(null) }
     var restorePin by remember { mutableStateOf("") }
+
+    // Realtime backup/restore progress (same dialog as import/export) + cancel.
+    var backupTransfer by remember { mutableStateOf<TransferProgress?>(null) }
+    val backupCancel = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
     var restoreRenameConflicts by remember { mutableStateOf(false) }
     var showRestorePin by remember { mutableStateOf(false) }
     var showRestoreMerge by remember { mutableStateOf(false) }
-    var busyOpText by remember { mutableStateOf<String?>(null) }
-    var opProgress by remember { mutableStateOf<Pair<Int, Int>?>(null) }
 
     // ---- v1 -> v2 optimization state ----
     var legacyCount by remember { mutableStateOf(0) }
@@ -814,8 +818,7 @@ fun SettingsScreen(
             onDismiss = { pendingBackupUri = null },
             onConfirm = { pin ->
                 pendingBackupUri = null
-                busyOpText = "Membuat backup terenkripsi..."
-                opProgress = null
+                backupCancel.set(false)
                 scope.launch {
                     try {
                         val slot = VaultSession.slot ?: VaultSlot.REAL
@@ -827,6 +830,8 @@ fun SettingsScreen(
                                     slot = slot,
                                     stack = container.currentStack(),
                                     keyManager = container.keyManager,
+                                    onProgress = { p -> backupTransfer = p },
+                                    isCancelled = { backupCancel.get() },
                                 )
                             } ?: throw IllegalStateException("Tidak dapat membuka tujuan backup")
                         }
@@ -836,10 +841,15 @@ fun SettingsScreen(
                                 FormatUtil.fileSize(summary.totalBytes),
                             Toast.LENGTH_LONG,
                         ).show()
+                    } catch (e: TransferCancelledException) {
+                        // Never leave a partial .svbackup in the public location.
+                        runCatching { activity.contentResolver.delete(uri, null, null) }
+                        Toast.makeText(activity, e.message ?: "Backup dibatalkan", Toast.LENGTH_LONG).show()
                     } catch (e: Exception) {
+                        runCatching { activity.contentResolver.delete(uri, null, null) }
                         Toast.makeText(activity, "Backup gagal: ${e.message}", Toast.LENGTH_LONG).show()
                     } finally {
-                        busyOpText = null
+                        backupTransfer = null
                     }
                 }
             },
@@ -905,8 +915,7 @@ fun SettingsScreen(
                     showRestoreMerge = false
                     val targetUri = pendingRestoreUri
                     if (targetUri != null) {
-                        busyOpText = "Me-restore & mengenkripsi ulang..."
-                        opProgress = 0 to 0
+                        backupCancel.set(false)
                         scope.launch {
                             try {
                                 val result = withContext(Dispatchers.IO) {
@@ -916,7 +925,9 @@ fun SettingsScreen(
                                             originalPin = restorePin.toCharArray(),
                                             renameConflicts = restoreRenameConflicts,
                                             stack = container.currentStack(),
-                                        ) { done, total -> opProgress = done to total }
+                                            onProgress = { p -> backupTransfer = p },
+                                            isCancelled = { backupCancel.get() },
+                                        )
                                     } ?: throw IllegalStateException("Tidak dapat membaca file backup")
                                 }
                                 Toast.makeText(
@@ -932,12 +943,14 @@ fun SettingsScreen(
                                 } catch (_: Exception) {
                                     statsText
                                 }
+                            } catch (e: TransferCancelledException) {
+                                Toast.makeText(activity, e.message ?: "Restore dibatalkan", Toast.LENGTH_LONG)
+                                    .show()
                             } catch (e: Exception) {
                                 Toast.makeText(activity, "Restore gagal: ${e.message}", Toast.LENGTH_LONG)
                                     .show()
                             } finally {
-                                busyOpText = null
-                                opProgress = null
+                                backupTransfer = null
                                 pendingRestoreUri = null
                             }
                         }
@@ -1022,26 +1035,11 @@ fun SettingsScreen(
         )
     }
 
-    busyOpText?.let { message ->
-        AlertDialog(
-            onDismissRequest = {},
-            title = { Text(message) },
-            text = {
-                val p = opProgress
-                if (p != null && p.second > 0) {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        LinearProgressIndicator(
-                            progress = { p.first.toFloat() / p.second.toFloat() },
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        Text("${p.first}/${p.second} item", style = MaterialTheme.typography.bodySmall)
-                    }
-                } else {
-                    LinearProgressIndicator(Modifier.fillMaxWidth())
-                }
-            },
-            confirmButton = {},
-            dismissButton = {},
+    // Realtime backup/restore progress overlay (nama file + (n/total) + bar).
+    backupTransfer?.let { tp ->
+        id.bayu.mygalleryvault.ui.components.TransferProgressDialog(
+            progress = tp,
+            onCancel = { backupCancel.set(true) },
         )
     }
 }

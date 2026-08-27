@@ -53,6 +53,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -339,7 +340,10 @@ fun VideoPlayerScreen(
         }
     }
 
+    val currentSelectedSubId by rememberUpdatedState(selectedSubId)
     DisposableEffect(player) {
+        // The listener outlives recompositions that change selectedSubId, so it
+        // must read the LATEST choice - not a stale captured value.
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(value: Boolean) {
                 isPlaying = value
@@ -351,6 +355,13 @@ fun VideoPlayerScreen(
                     durationMs = player.duration.coerceAtLeast(0L)
                 }
                 hasEnded = state == Player.STATE_ENDED
+            }
+
+            override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
+                // Selection applied right after prepare() used to miss because
+                // text track groups appear only here - re-apply on every change
+                // so a picked SRT actually renders.
+                applySubtitleSelection(player, currentSelectedSubId)
             }
 
             override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
