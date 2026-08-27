@@ -168,11 +168,27 @@ class VaultStorage(private val context: Context, slotDir: String? = null) {
 
     fun loadThumbnail(ref: String, key: SecretKey): Bitmap? {
         val f = File(thumbsDir, ref)
-        if (!f.exists()) return null
+        if (!f.exists()) {
+            android.util.Log.d("SV_Thumb", "load $ref MISS file")
+            return null
+        }
         return try {
-            val bytes = readDecrypted(f.name, key)
-            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-        } catch (_: Exception) {
+            // Decrypt straight from thumbsDir - routing through readDecrypted()
+            // would look in objectsDir and always fail ("object missing").
+            val bos = ByteArrayOutputStream()
+            f.inputStream().buffered().use { input ->
+                CryptoEngine.decryptStream(input, bos, key)
+            }
+            val bytes = bos.toByteArray()
+            // Decode FIRST - scrubbing plaintext must happen afterwards.
+            val bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            java.util.Arrays.fill(bytes, 0)
+            if (bmp == null) {
+                android.util.Log.d("SV_Thumb", "load $ref DECODE_NULL ${bytes.size}b")
+            }
+            bmp
+        } catch (t: Throwable) {
+            android.util.Log.d("SV_Thumb", "load $ref FAIL ${t.javaClass.simpleName}: ${t.message}")
             null
         }
     }

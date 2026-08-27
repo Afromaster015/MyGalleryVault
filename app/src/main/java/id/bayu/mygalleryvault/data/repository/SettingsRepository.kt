@@ -8,6 +8,7 @@ import id.bayu.mygalleryvault.domain.model.AutoLockOption
 import id.bayu.mygalleryvault.domain.model.SearchEngine
 import id.bayu.mygalleryvault.domain.model.SettingsKeys
 import id.bayu.mygalleryvault.domain.model.ShakeSensitivity
+import id.bayu.mygalleryvault.domain.model.ViewMode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -68,6 +69,16 @@ class SettingsRepository(private val settingsDao: SettingsDao) {
             rows.firstOrNull { it.key == SettingsKeys.SHIELDS_DEFAULT_ON }?.value != "false"
         }
 
+    /** Gallery presentation: thumbnail grid (default) or detail list. */
+    val homeViewMode: Flow<ViewMode> =
+        settingsDao.observeAll().map { rows ->
+            if (rows.firstOrNull { it.key == SettingsKeys.HOME_VIEW_MODE }?.value == "LIST") {
+                ViewMode.LIST
+            } else {
+                ViewMode.GRID
+            }
+        }
+
     fun start() {
         scope.launch {
             autoLock.collect { option -> AutoLockManager.delayMillis = option.delayMillis }
@@ -120,6 +131,10 @@ class SettingsRepository(private val settingsDao: SettingsDao) {
 
     suspend fun setShieldsDefaultOn(on: Boolean) {
         settingsDao.put(SettingEntity(SettingsKeys.SHIELDS_DEFAULT_ON, on.toString()))
+    }
+
+    suspend fun setHomeViewMode(mode: ViewMode) {
+        settingsDao.put(SettingEntity(SettingsKeys.HOME_VIEW_MODE, mode.name))
     }
 
     private fun parseAutoLock(value: String?): AutoLockOption =

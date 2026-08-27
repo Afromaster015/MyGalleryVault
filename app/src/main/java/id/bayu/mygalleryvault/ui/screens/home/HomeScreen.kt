@@ -16,15 +16,18 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
@@ -41,17 +44,21 @@ import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.DriveFileMove
 import androidx.compose.material.icons.rounded.FileDownload
 import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.GridView
+import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.InsertDriveFile
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.VideoFile
+import androidx.compose.material.icons.rounded.ViewList
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -79,6 +86,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
@@ -91,6 +99,7 @@ import id.bayu.mygalleryvault.core.crypto.VaultSession
 import id.bayu.mygalleryvault.core.lock.AutoLockManager
 import id.bayu.mygalleryvault.data.repository.AuthRepository
 import id.bayu.mygalleryvault.domain.model.SortOption
+import id.bayu.mygalleryvault.domain.model.ViewMode
 import id.bayu.mygalleryvault.domain.model.VaultEntry
 import id.bayu.mygalleryvault.domain.model.VaultFile
 import id.bayu.mygalleryvault.domain.model.VaultSlot
@@ -99,6 +108,7 @@ import id.bayu.mygalleryvault.ui.components.FormatUtil
 import id.bayu.mygalleryvault.ui.components.MoveToFolderDialog
 import id.bayu.mygalleryvault.ui.components.ShareWarningDialog
 import id.bayu.mygalleryvault.ui.components.TextInputDialog
+import id.bayu.mygalleryvault.ui.components.TransferProgressDialog
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
@@ -124,6 +134,13 @@ fun HomeScreen(
     val importing by vm.importing.collectAsStateWithLifecycle()
     val message by vm.message.collectAsStateWithLifecycle()
     val currentSort by vm.currentSort.collectAsStateWithLifecycle()
+    val transferProgress by vm.transferProgress.collectAsStateWithLifecycle()
+
+    // Grid vs detail-list presentation, persisted across sessions (settings DB).
+    val settingsRepo = app.container.settingsRepository
+    val viewMode by produceState(ViewMode.GRID) {
+        settingsRepo.homeViewMode.collect { value = it }
+    }
 
     var searchMode by rememberSaveable { mutableStateOf(false) }
     var sortMenuOpen by remember { mutableStateOf(false) }
@@ -151,6 +168,8 @@ fun HomeScreen(
     var pendingDeleteIds by remember { mutableStateOf<List<Long>>(emptyList()) }
     var pendingExportIds by remember { mutableStateOf<List<Long>>(emptyList()) }
     var bulkBusy by remember { mutableStateOf(false) }
+    // A tracked import/export (progress dialog) also disables destructive actions.
+    val busyWithTransfer = bulkBusy || transferProgress != null
 
     fun toggleSelect(id: Long) {
         if (selectedIds.contains(id)) selectedIds.remove(id) else selectedIds.add(id)
@@ -191,25 +210,14 @@ fun HomeScreen(
         val ids = pendingExportIds
         pendingExportIds = emptyList()
         if (treeUri != null && ids.isNotEmpty()) {
-            bulkBusy = true
-            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
-                var ok = 0
-                var fail = 0
-                runCatching {
-                    activity.contentResolver.takePersistableUriPermission(
-                        treeUri,
-                        android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                            android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                    )
-                }
-                for (id in ids) {
-                    try {
-                        if (app.container.currentStack().repository.exportIntoDir(id, treeUri)) ok++ else fail++
-                    } catch (_: Exception) {
-                        fail++
-                    }
-                }
-                bulkBusy = false
+            runCatching {
+                activity.contentResolver.takePersistableUriPermission(
+                    treeUri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                        android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+            }
+            vm.exportAllIntoDir(ids, treeUri) { ok, fail ->
                 selectedIds.clear()
                 Toast.makeText(
                     activity,
@@ -274,7 +282,7 @@ fun HomeScreen(
                     if (inSelection) {
                         TextButton(
                             onClick = { selectedIds.clear(); selectedIds.addAll(fileIdSet) },
-                            enabled = !bulkBusy,
+                            enabled = !busyWithTransfer,
                         ) { Text("Semua") }
                         IconButton(
                             onClick = {
@@ -283,7 +291,7 @@ fun HomeScreen(
                                     bulkExportTreeLauncher.launch(null)
                                 }
                             },
-                            enabled = !bulkBusy &&
+                            enabled = !busyWithTransfer &&
                                 selectedIds.any { fileIdSet.contains(it) },
                         ) {
                             Icon(Icons.Rounded.FileDownload, contentDescription = "Export terpilih")
@@ -293,11 +301,22 @@ fun HomeScreen(
                                 pendingDeleteIds = selectedIds.toList()
                                 bulkDeleteConfirm = true
                             },
-                            enabled = !bulkBusy,
+                            enabled = !busyWithTransfer,
                         ) {
                             Icon(Icons.Rounded.Delete, contentDescription = "Hapus terpilih")
                         }
                     } else {
+                        IconButton(onClick = {
+                            val next = if (viewMode == ViewMode.GRID) ViewMode.LIST else ViewMode.GRID
+                            homeScope.launch { settingsRepo.setHomeViewMode(next) }
+                        }) {
+                            Icon(
+                                if (viewMode == ViewMode.GRID) Icons.Rounded.GridView
+                                else Icons.Rounded.ViewList,
+                                contentDescription = if (viewMode == ViewMode.GRID) "Tampilan detail"
+                                else "Tampilan grid",
+                            )
+                        }
                         IconButton(onClick = {
                             searchMode = !searchMode
                             if (!searchMode) vm.setSearchQuery("")
@@ -385,6 +404,16 @@ fun HomeScreen(
                         Text("Tekan tombol + untuk mengimpor file", style = MaterialTheme.typography.bodySmall)
                     }
                 }
+            } else if (viewMode == ViewMode.LIST) {
+                EntryDetailsList(
+                    entries = entries,
+                    vm = vm,
+                    selectionMode = inSelection,
+                    isSelected = { selectedIds.contains(it) },
+                    onToggleSelect = ::toggleSelect,
+                    onOpenFolder = { id -> navController.navigate(Routes.folder(id)) },
+                    onOpenFile = ::onFileClicked,
+                )
             } else {
                 LazyVerticalGrid(
                     columns = GridCells.Fixed(2),
@@ -401,6 +430,7 @@ fun HomeScreen(
                     }) { entry ->
                         when (entry) {
                             is VaultEntry.Folder -> FolderTile(
+                                vm = vm,
                                 name = entry.folder.name,
                                 id = entry.folder.id,
                                 isSelected = selectedIds.contains(entry.folder.id),
@@ -565,7 +595,7 @@ fun HomeScreen(
         val fileCount = pendingDeleteIds.count { fileIdSet.contains(it) }
         val folderCount = pendingDeleteIds.size - fileCount
         AlertDialog(
-            onDismissRequest = { if (!bulkBusy) bulkDeleteConfirm = false },
+            onDismissRequest = { if (!busyWithTransfer) bulkDeleteConfirm = false },
             title = { Text("Hapus ${pendingDeleteIds.size} item?") },
             text = {
                 Text(
@@ -578,7 +608,7 @@ fun HomeScreen(
             },
             confirmButton = {
                 TextButton(
-                    enabled = !bulkBusy,
+                    enabled = !busyWithTransfer,
                     onClick = {
                         bulkBusy = true
                         val targets = pendingDeleteIds.toList()
@@ -607,7 +637,7 @@ fun HomeScreen(
                 ) { Text("Hapus") }
             },
             dismissButton = {
-                TextButton(onClick = { if (!bulkBusy) bulkDeleteConfirm = false }) { Text("Batal") }
+                TextButton(onClick = { if (!busyWithTransfer) bulkDeleteConfirm = false }) { Text("Batal") }
             },
         )
     }
@@ -655,6 +685,11 @@ fun HomeScreen(
                 shareExternally(vm, activity, file)
             },
         )
+    }
+
+    // Realtime import/export progress (per-item filename + moving bar).
+    transferProgress?.let { tp ->
+        TransferProgressDialog(progress = tp, onCancel = vm::cancelTransfer)
     }
 
     pendingBreakIns?.let { alerts ->
@@ -823,6 +858,7 @@ private fun shareExternally(vm: HomeViewModel, activity: FragmentActivity, file:
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FolderTile(
+    vm: HomeViewModel,
     name: String,
     id: Long,
     isSelected: Boolean,
@@ -830,6 +866,8 @@ private fun FolderTile(
     onClick: (Long) -> Unit,
     onLongPress: (Long, String) -> Unit,
 ) {
+    // Same geometry as FileTile so rows align; the cover area shows a 2x2
+    // preview of this folder's contents when it is not empty.
     val borderColor = if (isSelected) MaterialTheme.colorScheme.primary
     else MaterialTheme.colorScheme.outlineVariant
     Surface(
@@ -845,30 +883,134 @@ private fun FolderTile(
                     .combinedClickable(
                         onClick = { onClick(id) },
                         onLongClick = { onLongPress(id, name) },
-                    )
-                    .padding(16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
+                    ),
             ) {
-                Icon(
-                    Icons.Rounded.Folder,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.height(56.dp),
-                )
-                Spacer(Modifier.height(8.dp))
-                Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Box(Modifier.fillMaxWidth().height(110.dp)) {
+                    val previews by produceState<List<VaultFile>>(initialValue = emptyList(), key1 = id) {
+                        value = runCatching { vm.folderPreview(id) }.getOrDefault(emptyList())
+                    }
+                    if (previews.isEmpty()) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.Rounded.Folder,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.height(64.dp),
+                            )
+                        }
+                    } else {
+                        Column(
+                            Modifier
+                                .fillMaxSize()
+                                .padding(5.dp),
+                            verticalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            Row(
+                                Modifier.weight(1f),
+                                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                            ) {
+                                PreviewSlot(previews.getOrNull(0), vm)
+                                PreviewSlot(previews.getOrNull(1), vm)
+                            }
+                            Row(
+                                Modifier.weight(1f),
+                                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                            ) {
+                                PreviewSlot(previews.getOrNull(2), vm)
+                                PreviewSlot(previews.getOrNull(3), vm)
+                            }
+                        }
+                    }
+                }
+                Column(Modifier.padding(10.dp)) {
+                    Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("Folder", style = MaterialTheme.typography.labelSmall)
+                }
             }
             if (selectionMode) {
                 Icon(
                     if (isSelected) Icons.Rounded.CheckCircle else Icons.Rounded.Circle,
                     contentDescription = null,
                     tint = if (isSelected) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
+                    else MaterialTheme.colorScheme.outline.copy(alpha = 0.6f),
                     modifier = Modifier
                         .align(Alignment.TopEnd)
-                        .padding(8.dp),
+                        .padding(8.dp)
+                        .background(MaterialTheme.colorScheme.surface, CircleShape),
                 )
             }
+        }
+    }
+}
+
+/** One cell of a folder's 2x2 cover; empty slots stay visually quiet. */
+@Composable
+private fun RowScope.PreviewSlot(file: VaultFile?, vm: HomeViewModel) {
+    if (file == null) {
+        Box(
+            Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .clip(MaterialTheme.shapes.small)
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Rounded.InsertDriveFile,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
+                modifier = Modifier.height(20.dp),
+            )
+        }
+    } else {
+        PreviewThumb(
+            file = file,
+            vm = vm,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .clip(MaterialTheme.shapes.small),
+            iconHeightDp = 24,
+        )
+    }
+}
+
+/** Decrypted preview or a type-icon fallback inside [modifier]'s bounds. */
+@Composable
+private fun PreviewThumb(
+    file: VaultFile,
+    vm: HomeViewModel,
+    modifier: Modifier = Modifier,
+    iconHeightDp: Int = 28,
+) {
+    val thumb by produceState<Bitmap?>(
+        initialValue = null, key1 = file.id, key2 = file.hasThumbnail,
+    ) {
+        value = if (file.isVideo || file.isImage) {
+            vm.thumbnailFor(file.id, file.isVideo, file.isImage)
+        } else null
+    }
+    Box(modifier, contentAlignment = Alignment.Center) {
+        val bitmap = thumb
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = file.name,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        } else {
+            Icon(
+                imageVector = when {
+                    file.isImage -> Icons.Rounded.Image
+                    file.isVideo -> Icons.Rounded.VideoFile
+                    file.mimeType.startsWith("audio/") -> Icons.Rounded.AudioFile
+                    else -> Icons.Rounded.InsertDriveFile
+                },
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.height(iconHeightDp.dp),
+            )
         }
     }
 }
@@ -883,8 +1025,9 @@ private fun FileTile(
     onClick: (VaultFile) -> Unit,
     onLongPress: (VaultFile) -> Unit,
 ) {
-    val thumb by produceState<Bitmap?>(initialValue = null, key1 = file.id) {
-        value = vm.thumbnailFor(file.id, file.hasThumbnail)
+    val thumb by produceState<Bitmap?>(initialValue = null, key1 = file.id, key2 = file.hasThumbnail) {
+        // Self-healing preview: generate on demand when the stored thumb is missing.
+        value = vm.thumbnailFor(file.id, file.isVideo, file.isImage)
     }
     val borderColor = if (isSelected) MaterialTheme.colorScheme.primary
     else MaterialTheme.colorScheme.outlineVariant
@@ -949,6 +1092,123 @@ private fun FileTile(
             }
         }
     }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun EntryDetailsList(
+    entries: List<VaultEntry>,
+    vm: HomeViewModel,
+    selectionMode: Boolean,
+    isSelected: (Long) -> Boolean,
+    onToggleSelect: (Long) -> Unit,
+    onOpenFolder: (Long) -> Unit,
+    onOpenFile: (VaultFile) -> Unit,
+) {
+    LazyColumn(Modifier.fillMaxSize()) {
+        items(entries, key = { entry ->
+            when (entry) {
+                is VaultEntry.Folder -> "f${entry.folder.id}"
+                is VaultEntry.File -> "c${entry.file.id}"
+            }
+        }) { entry ->
+            val selected = when (entry) {
+                is VaultEntry.Folder -> isSelected(entry.folder.id)
+                is VaultEntry.File -> isSelected(entry.file.id)
+            }
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .combinedClickable(
+                        onClick = {
+                            when {
+                                selectionMode -> when (entry) {
+                                    is VaultEntry.Folder -> onToggleSelect(entry.folder.id)
+                                    is VaultEntry.File -> onToggleSelect(entry.file.id)
+                                }
+
+                                entry is VaultEntry.Folder -> onOpenFolder(entry.folder.id)
+                                entry is VaultEntry.File -> onOpenFile(entry.file)
+                            }
+                        },
+                        onLongClick = {
+                            when (entry) {
+                                is VaultEntry.Folder -> onToggleSelect(entry.folder.id)
+                                is VaultEntry.File -> onToggleSelect(entry.file.id)
+                            }
+                        },
+                    )
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                when (entry) {
+                    is VaultEntry.Folder -> Icon(
+                        Icons.Rounded.Folder,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.height(40.dp),
+                    )
+
+                    is VaultEntry.File -> MiniPreview(file = entry.file, vm = vm, sizeDp = 44)
+                }
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        when (entry) {
+                            is VaultEntry.Folder -> entry.folder.name
+                            is VaultEntry.File -> entry.file.name
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        when (entry) {
+                            is VaultEntry.Folder -> "Folder"
+                            is VaultEntry.File ->
+                                FormatUtil.dateTime(entry.file.modifiedAt)
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (entry is VaultEntry.File) {
+                    Text(
+                        FormatUtil.fileSize(entry.file.size),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Text(
+                        "",
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                }
+                if (selectionMode) {
+                    Spacer(Modifier.width(10.dp))
+                    Icon(
+                        if (selected) Icons.Rounded.CheckCircle else Icons.Rounded.Circle,
+                        contentDescription = null,
+                        tint = if (selected) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.outline.copy(alpha = 0.6f),
+                    )
+                }
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+        }
+    }
+}
+
+/** Small rounded preview for detail rows; falls back to a type icon. */
+@Composable
+private fun MiniPreview(file: VaultFile, vm: HomeViewModel, sizeDp: Int) {
+    PreviewThumb(
+        file = file,
+        vm = vm,
+        modifier = Modifier
+            .height(sizeDp.dp)
+            .width(sizeDp.dp)
+            .clip(MaterialTheme.shapes.small),
+    )
 }
 
 @OptIn(ExperimentalFoundationApi::class)

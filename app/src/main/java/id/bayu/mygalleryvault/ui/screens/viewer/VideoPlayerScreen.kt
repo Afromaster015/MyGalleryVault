@@ -8,7 +8,6 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
@@ -73,6 +72,7 @@ import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.ui.PlayerView
@@ -81,7 +81,11 @@ import id.bayu.mygalleryvault.core.crypto.VaultSession
 import id.bayu.mygalleryvault.core.playback.PlaybackDataSourceFactory
 import id.bayu.mygalleryvault.core.playback.vaultUri
 import id.bayu.mygalleryvault.data.repository.VaultRepository
+import id.bayu.mygalleryvault.domain.model.TransferCancelledException
+import id.bayu.mygalleryvault.domain.model.TransferKind
+import id.bayu.mygalleryvault.domain.model.TransferProgress
 import id.bayu.mygalleryvault.domain.model.VaultFile
+import id.bayu.mygalleryvault.ui.components.TransferProgressDialog
 import id.bayu.mygalleryvault.ui.screens.viewer.components.SpeedSheet
 import id.bayu.mygalleryvault.ui.screens.viewer.components.SubtitleEntry
 import id.bayu.mygalleryvault.ui.screens.viewer.components.SubtitleSheet
@@ -91,6 +95,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
+
+/** Legacy v1 playback decrypts to a plaintext temp; refuse beyond this. */
+private const val MAX_LEGACY_DECRYPT_BYTES = 512L * 1024 * 1024
 
 /** Resume positions live for the current app process only (keputusan #1). */
 object ResumePositions {
@@ -152,24 +159,32 @@ fun VideoPlayerScreen(
     LaunchedEffect(entity?.id) {
         val e = entity ?: return@LaunchedEffect
         fileName = e.name
-        // Auto-detect actual format from file header instead of trusting DB version
-        val storage = app.container.currentStack().storage
-        val actualVersion = withContext(Dispatchers.IO) {
-            storage.detectEncryptionVersion(e.encryptedName)
-        }
-        isV2 = actualVersion >= 2
-        if (isV2) {
-            ready = true
-        } else {
-            try {
+        android.util.Log.d("SV_Player", "open id=${e.id} size=${e.size} verDB=${e.encryptionVersion}")
+        try {
+            // Auto-detect actual format from file header instead of trusting DB version
+            val storage = app.container.currentStack().storage
+            val actualVersion = withContext(Dispatchers.IO) {
+                storage.detectEncryptionVersion(e.encryptedName)
+            }
+            isV2 = actualVersion >= 2
+            if (isV2) {
+                ready = true
+            } else if (e.size > MAX_LEGACY_DECRYPT_BYTES) {
+                // Refuse to materialize a multi-GB plaintext temp (storage-full /
+                // long freeze); v1→v2 optimize in Settings fixes playback.
+                errorText =
+                    "Video ini (${e.size / (1024 * 1024)} MB) memakai format lama dan " +
+                        "terlalu besar untuk didekripsi sementara. " +
+                        "Gunakan Pengaturan → Optimalkan file lama, atau export video ini."
+            } else {
                 val tmp = File(activity.cacheDir, "vplay_${e.id}_${System.currentTimeMillis()}.tmp")
                 withContext(Dispatchers.IO) { repo.decryptToFile(e.id, tmp) }
                 legacyTemp = tmp
                 legacyReady = true
                 ready = true
-            } catch (ex: Exception) {
-                errorText = ex.message ?: "Gagal mendekripsi video"
             }
+        } catch (ex: Exception) {
+            errorText = ex.message ?: "Gagal membuka video"
         }
     }
     DisposableEffect(Unit) {
@@ -181,7 +196,9 @@ fun VideoPlayerScreen(
     LaunchedEffect(entity?.id, legacyReady, isV2) {
         val e = entity ?: return@LaunchedEffect
         if (isV2) {
-            durationMs = repo.probeVideoDurationMs(e.id) ?: 0L
+            // Any failure here (locked mid-race, retriever quirks) must never
+            // kill the process - ExoPlayer timeline provides duration anyway.
+            durationMs = runCatching { repo.probeVideoDurationMs(e.id) }.getOrNull() ?: 0L
             probeDone = true
         } else {
             probeDone = true
@@ -205,28 +222,31 @@ fun VideoPlayerScreen(
     LaunchedEffect(vaultSubs) {
         val e = entity ?: return@LaunchedEffect
         if (activeSubs.isNotEmpty()) return@LaunchedEffect
-        val base = e.name.substringBeforeLast('.', e.name)
-        val match = vaultSubs.firstOrNull {
-            it.name.substringBeforeLast('.', it.name).equals(base, ignoreCase = true)
-        } ?: return@LaunchedEffect
-        val encName = repo.encryptedNameOf(match.id) ?: return@LaunchedEffect
-        val mime = VaultRepository.subtitleMime(match.name) ?: return@LaunchedEffect
-        // Auto-detect subtitle format from file header
-        val subIsV2 = withContext(Dispatchers.IO) {
-            app.container.currentStack().storage.detectEncryptionVersion(encName) >= 2
+        // Auto-match must never crash the player mid-lock-race.
+        runCatching {
+            val base = e.name.substringBeforeLast('.', e.name)
+            val match = vaultSubs.firstOrNull {
+                it.name.substringBeforeLast('.', it.name).equals(base, ignoreCase = true)
+            } ?: return@LaunchedEffect
+            val encName = repo.encryptedNameOf(match.id) ?: return@LaunchedEffect
+            val mime = VaultRepository.subtitleMime(match.name) ?: return@LaunchedEffect
+            // Auto-detect subtitle format from file header
+            val subIsV2 = withContext(Dispatchers.IO) {
+                app.container.currentStack().storage.detectEncryptionVersion(encName) >= 2
+            }
+            val uri = if (subIsV2) {
+                vaultUri(encName)
+            } else {
+                val tmp = File(activity.cacheDir, "vsub_${match.id}_${System.currentTimeMillis()}.tmp")
+                withContext(Dispatchers.IO) { repo.decryptToFile(match.id, tmp) }
+                vsubTemps.add(tmp)
+                Uri.fromFile(tmp)
+            }
+            activeSubs = listOf(
+                ActiveSubtitle("sub_v_${match.id}", "${match.name}  •", uri, mime)
+            )
+            selectedSubId = "sub_v_${match.id}"
         }
-        val uri = if (subIsV2) {
-            vaultUri(encName)
-        } else {
-            val tmp = File(activity.cacheDir, "vsub_${match.id}_${System.currentTimeMillis()}.tmp")
-            withContext(Dispatchers.IO) { repo.decryptToFile(match.id, tmp) }
-            vsubTemps.add(tmp)
-            Uri.fromFile(tmp)
-        }
-        activeSubs = listOf(
-            ActiveSubtitle("sub_v_${match.id}", "${match.name}  •", uri, mime)
-        )
-        selectedSubId = "sub_v_${match.id}"
     }
 
     val externalUris = remember { mutableListOf<Uri>() }
@@ -250,7 +270,14 @@ fun VideoPlayerScreen(
     }
 
     // ---------- player ----------
-    val player = remember(fileId) { ExoPlayer.Builder(activity).build() }
+    val player = remember(fileId) {
+        val renderers = DefaultRenderersFactory(activity).apply {
+            // Prefer a working fallback decoder instead of failing the track.
+            setEnableDecoderFallback(true)
+        }
+        android.util.Log.d("SV_Player", "ExoPlayer created")
+        ExoPlayer.Builder(activity, renderers).build()
+    }
     DisposableEffect(player) {
         player.setAudioAttributes(
             ExoAudioAttributes.Builder()
@@ -334,7 +361,17 @@ fun VideoPlayerScreen(
             }
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
-                errorText = error.message ?: "Gagal memutar video"
+                android.util.Log.d(
+                    "SV_Player",
+                    "onPlayerError code=${error.errorCode} cause=${error.cause}",
+                )
+                errorText = if (error.message?.contains("terkunci", ignoreCase = true) == true ||
+                    error.cause?.message?.contains("terkunci", ignoreCase = true) == true
+                ) {
+                    "Vault terkunci. Tekan kembali lalu buka video lagi."
+                } else {
+                    error.message ?: "Gagal memutar video"
+                }
             }
         }
         player.addListener(listener)
@@ -382,30 +419,23 @@ fun VideoPlayerScreen(
     }
 
     // ---------- actions ----------
-    val exportLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("application/octet-stream")
-    ) { uri ->
+
+    // Realtime export progress (single item, works for both v2 streaming and legacy temp).
+    var transferState by remember { mutableStateOf<TransferProgress?>(null) }
+    val transferCancel = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+
+    fun startTrackedExport(toast: String, block: suspend () -> Unit) {
+        if (transferState != null) return
+        transferCancel.set(false)
         scope.launch {
             try {
-                if (uri != null) {
-                    if (legacyTemp != null) {
-                        withContext(Dispatchers.IO) {
-                            activity.contentResolver.openOutputStream(uri)?.use { out ->
-                                legacyTemp!!.inputStream().use { it.copyTo(out) }
-                            } ?: throw IOException("Tidak dapat membuka tujuan export")
-                        }
-                    } else {
-                        repo.exportFile(fileId, uri)
-                    }
-                    Toast.makeText(activity, "File diekspor", Toast.LENGTH_SHORT).show()
-                } else {
-                    // SAF file picker returned null (cancelled or broken) - fallback to Downloads
-                    val e = entity ?: return@launch
-                    val safeName = e.name.ifBlank { "video.mp4" }
-                    repo.exportToDownloads(fileId, safeName)
-                    withContext(Dispatchers.Main) {
-                        Toast.makeText(activity, "File disimpan ke folder Downloads", Toast.LENGTH_SHORT).show()
-                    }
+                block()
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(activity, toast, Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: TransferCancelledException) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(activity, "Dibatalkan", Toast.LENGTH_SHORT).show()
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
@@ -415,27 +445,92 @@ fun VideoPlayerScreen(
                         Toast.LENGTH_LONG,
                     ).show()
                 }
+            } finally {
+                transferState = null
+            }
+        }
+    }
+
+    /** Manual counted copy for the legacy plaintext temp file, with the same progress shape. */
+    suspend fun copyTempWithProgress(source: File, destUri: Uri) {
+        withContext(Dispatchers.IO) {
+            val total = source.length()
+            val name = entity?.name ?: source.name
+            activity.contentResolver.openOutputStream(destUri)?.buffered()?.use { out ->
+                source.inputStream().buffered().use { input ->
+                    val buf = ByteArray(64 * 1024)
+                    var done = 0L
+                    while (true) {
+                        if (transferCancel.get()) {
+                            throw TransferCancelledException(0, "Export dibatalkan")
+                        }
+                        val r = input.read(buf)
+                        if (r == -1) break
+                        out.write(buf, 0, r)
+                        done += r
+                        transferState = TransferProgress.single(
+                            TransferKind.EXPORT,
+                            name,
+                            done,
+                            if (total > 0) total else done + 1,
+                        )
+                    }
+                    transferState =
+                        TransferProgress.single(TransferKind.EXPORT, name, total, total.coerceAtLeast(1))
+                }
+            } ?: throw IOException("Tidak dapat membuka tujuan export")
+        }
+    }
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/octet-stream")
+    ) { uri ->
+        if (uri != null) {
+            startTrackedExport("File diekspor") {
+                val tmp = legacyTemp
+                if (tmp != null) {
+                    copyTempWithProgress(tmp, uri)
+                } else {
+                    repo.exportFile(
+                        fileId, uri,
+                        onItemProgress = { done, total ->
+                            transferState = TransferProgress.single(
+                                TransferKind.EXPORT,
+                                entity?.name ?: fileName,
+                                done,
+                                total,
+                            )
+                        },
+                        isCancelled = { transferCancel.get() },
+                    )
+                }
+            }
+        } else {
+            // SAF file picker returned null (cancelled or broken) - fallback to Downloads
+            val e = entity ?: return@rememberLauncherForActivityResult
+            val safeName = e.name.ifBlank { "video.mp4" }
+            startTrackedExport("File disimpan ke folder Downloads") {
+                repo.exportToDownloads(
+                    fileId, safeName,
+                    onItemProgress = { done, total ->
+                        transferState = TransferProgress.single(TransferKind.EXPORT, safeName, done, total)
+                    },
+                    isCancelled = { transferCancel.get() },
+                )
             }
         }
     }
 
     fun exportToDownloads() {
         val e = entity ?: return
-        scope.launch {
-            try {
-                repo.exportToDownloads(e.id, e.name)
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(activity, "Tersimpan di folder Download", Toast.LENGTH_SHORT).show()
-                }
-            } catch (ex: Exception) {
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(
-                        activity,
-                        "Export gagal (${ex.javaClass.simpleName}): ${ex.message}",
-                        Toast.LENGTH_LONG,
-                    ).show()
-                }
-            }
+        startTrackedExport("Tersimpan di folder Download") {
+            repo.exportToDownloads(
+                e.id, e.name,
+                onItemProgress = { done, total ->
+                    transferState = TransferProgress.single(TransferKind.EXPORT, e.name, done, total)
+                },
+                isCancelled = { transferCancel.get() },
+            )
         }
     }
 
@@ -811,6 +906,11 @@ fun VideoPlayerScreen(
             },
             onDismiss = { showSubtitleSheet = false },
         )
+    }
+
+    // Realtime export progress overlay.
+    transferState?.let { tp ->
+        TransferProgressDialog(progress = tp, onCancel = { transferCancel.set(true) })
     }
 
     if (showDeleteConfirm) {

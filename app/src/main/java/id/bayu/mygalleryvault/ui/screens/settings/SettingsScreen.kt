@@ -1063,7 +1063,7 @@ private fun PinEntryDialog(
                 Text(subtitle, style = MaterialTheme.typography.bodySmall)
                 OutlinedTextField(
                     value = pin,
-                    onValueChange = { pin = it.filter(Char::isDigit).take(12) },
+                    onValueChange = { pin = it.filter(Char::isDigit).take(AuthRepository.MAX_PIN_LENGTH) },
                     label = { Text("PIN") },
                     visualTransformation = PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
@@ -1328,7 +1328,7 @@ private fun DecoySetupDialog(
                 )
                 OutlinedTextField(
                     value = pin,
-                    onValueChange = { pin = it.filter(Char::isDigit).take(12) },
+                    onValueChange = { pin = it.filter(Char::isDigit).take(AuthRepository.MAX_PIN_LENGTH) },
                     label = { Text("PIN decoy") },
                     visualTransformation = PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
@@ -1336,7 +1336,7 @@ private fun DecoySetupDialog(
                 )
                 OutlinedTextField(
                     value = confirm,
-                    onValueChange = { confirm = it.filter(Char::isDigit).take(12) },
+                    onValueChange = { confirm = it.filter(Char::isDigit).take(AuthRepository.MAX_PIN_LENGTH) },
                     label = { Text("Konfirmasi PIN decoy") },
                     visualTransformation = PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
@@ -1378,7 +1378,7 @@ private fun ChangePinDialog(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
                     value = old,
-                    onValueChange = { old = it.filter(Char::isDigit).take(12) },
+                    onValueChange = { old = it.filter(Char::isDigit).take(AuthRepository.MAX_PIN_LENGTH) },
                     label = { Text("PIN lama") },
                     visualTransformation = PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
@@ -1386,7 +1386,7 @@ private fun ChangePinDialog(
                 )
                 OutlinedTextField(
                     value = new,
-                    onValueChange = { new = it.filter(Char::isDigit).take(12) },
+                    onValueChange = { new = it.filter(Char::isDigit).take(AuthRepository.MAX_PIN_LENGTH) },
                     label = { Text("PIN baru") },
                     visualTransformation = PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
@@ -1394,7 +1394,7 @@ private fun ChangePinDialog(
                 )
                 OutlinedTextField(
                     value = confirm,
-                    onValueChange = { confirm = it.filter(Char::isDigit).take(12) },
+                    onValueChange = { confirm = it.filter(Char::isDigit).take(AuthRepository.MAX_PIN_LENGTH) },
                     label = { Text("Konfirmasi PIN baru") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
                     singleLine = true,

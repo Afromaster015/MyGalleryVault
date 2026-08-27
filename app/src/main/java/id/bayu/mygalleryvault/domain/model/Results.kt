@@ -6,6 +6,8 @@ sealed class UnlockResult {
         val attemptCount: Int,
         val backoffMillis: Long,
         val breakInDetected: Boolean = false,
+        /** Absolute epoch when the keypad unlocks again (persisted across restarts). */
+        val lockUntilMillis: Long = 0L,
     ) : UnlockResult()
 }
 

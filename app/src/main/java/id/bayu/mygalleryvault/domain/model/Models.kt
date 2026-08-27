@@ -45,9 +45,20 @@ enum class AutoLockOption(val label: String, val delayMillis: Long) {
     MINUTES_5("5 menit", 300_000L),
 }
 
+/** Browse presentation inside vault screens. */
+enum class ViewMode {
+    GRID,
+    LIST,
+}
+
 object SettingsKeys {
     const val AUTO_LOCK = "auto_lock"
     const val SCREENSHOT_PROTECTION = "screenshot_protection"
+    const val HOME_VIEW_MODE = "home_view_mode"
+    /** Digit count of the PRIMARY vault PIN - drives the lock-screen dot slots. */
+    const val PIN_LENGTH = "pin_length"
+    /** Absolute epoch until which PIN entry stays locked after wrong attempts. */
+    const val LOCKED_UNTIL = "locked_until"
     const val BIOMETRIC_ENABLED = "biometric_enabled"
     const val FAILED_THRESHOLD = "failed_threshold"
     const val FAILED_COUNT = "failed_count"

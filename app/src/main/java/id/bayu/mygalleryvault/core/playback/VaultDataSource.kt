@@ -35,7 +35,10 @@ class VaultDataSource(
 
     override fun open(dataSpec: DataSpec): Long {
         transferInitializing(dataSpec)
-        val key = checkNotNull(VaultSession.masterKey) { "Vault terkunci" }
+        // DataSource contract expects IOExceptions - a bare IllegalStateException
+        // here is flagged by ExoPlayer as an unexpected loader error.
+        val key = VaultSession.masterKey
+            ?: throw IOException("Vault terkunci")
         val name = dataSpec.uri.host
             ?: throw IOException("Invalid vault URI: $dataSpec.uri")
         val opened = try {

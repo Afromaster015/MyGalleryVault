@@ -41,9 +41,12 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.fragment.app.FragmentActivity
 import id.bayu.mygalleryvault.SecureVaultApp
+import id.bayu.mygalleryvault.domain.model.TransferCancelledException
+import id.bayu.mygalleryvault.domain.model.TransferKind
+import id.bayu.mygalleryvault.domain.model.TransferProgress
 import id.bayu.mygalleryvault.ui.components.DecryptedShare
+import id.bayu.mygalleryvault.ui.components.TransferProgressDialog
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -74,49 +77,21 @@ fun ImageViewerScreen(
 
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var exportTargetName by remember { mutableStateOf<String?>(null) }
-    val loading = MutableStateFlow(false)
 
-    val exportLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("application/octet-stream")
-    ) { uri ->
-        if (uri != null && fileId > 0) {
-            scope.launch {
-                try {
-                    repo.exportFile(fileId, uri)
-                    Toast.makeText(activity, "File diekspor", Toast.LENGTH_SHORT).show()
-                } catch (e: Exception) {
-                    Toast.makeText(
-                        activity,
-                        "Export gagal (${e.javaClass.simpleName}): ${e.message}",
-                        Toast.LENGTH_LONG,
-                    ).show()
-                }
-            }
-        } else if (fileId > 0) {
-            val safeName = (fileName ?: "export.jpg")
-            scope.launch {
-                try {
-                    repo.exportToDownloads(fileId, safeName)
-                    Toast.makeText(activity, "File disimpan ke folder Downloads", Toast.LENGTH_SHORT).show()
-                } catch (e: Exception) {
-                    Toast.makeText(
-                        activity,
-                        "Export gagal (${e.javaClass.simpleName}): ${e.message}",
-                        Toast.LENGTH_LONG,
-                    ).show()
-                }
-            }
-        }
-        exportTargetName = null
-    }
+    // Realtime export progress (single item).
+    var transferState by remember { mutableStateOf<TransferProgress?>(null) }
+    val transferCancel = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
 
-    fun exportToDownloads() {
-        val name = fileName ?: "export.jpg"
+    fun startTrackedExport(toast: String, block: suspend () -> Unit) {
+        if (transferState != null) return
+        transferCancel.set(false)
         scope.launch {
             try {
-                repo.exportToDownloads(fileId, name)
+                block()
+                Toast.makeText(activity, toast, Toast.LENGTH_SHORT).show()
+            } catch (e: TransferCancelledException) {
                 withContext(Dispatchers.Main) {
-                    Toast.makeText(activity, "Tersimpan di folder Download", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(activity, "Dibatalkan", Toast.LENGTH_SHORT).show()
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
@@ -126,7 +101,53 @@ fun ImageViewerScreen(
                         Toast.LENGTH_LONG,
                     ).show()
                 }
+            } finally {
+                transferState = null
             }
+        }
+    }
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/octet-stream")
+    ) { uri ->
+        val name = fileName ?: "export.jpg"
+        if (uri != null && fileId > 0) {
+            startTrackedExport("File diekspor") {
+                repo.exportFile(
+                    fileId, uri,
+                    onItemProgress = { done, total ->
+                        transferState =
+                            TransferProgress.single(TransferKind.EXPORT, name, done, total)
+                    },
+                    isCancelled = { transferCancel.get() },
+                )
+            }
+        } else if (fileId > 0) {
+            startTrackedExport("File disimpan ke folder Downloads") {
+                repo.exportToDownloads(
+                    fileId, name,
+                    onItemProgress = { done, total ->
+                        transferState =
+                            TransferProgress.single(TransferKind.EXPORT, name, done, total)
+                    },
+                    isCancelled = { transferCancel.get() },
+                )
+            }
+        }
+        exportTargetName = null
+    }
+
+    fun exportToDownloads() {
+        val name = fileName ?: "export.jpg"
+        startTrackedExport("Tersimpan di folder Download") {
+            repo.exportToDownloads(
+                fileId, name,
+                onItemProgress = { done, total ->
+                    transferState =
+                        TransferProgress.single(TransferKind.EXPORT, name, done, total)
+                },
+                isCancelled = { transferCancel.get() },
+            )
         }
     }
 
@@ -196,6 +217,11 @@ fun ImageViewerScreen(
                 Icon(Icons.Rounded.Delete, "Hapus", tint = Color.White)
             }
         }
+    }
+
+    // Realtime export progress overlay.
+    transferState?.let { tp ->
+        TransferProgressDialog(progress = tp, onCancel = { transferCancel.set(true) })
     }
 
     if (showDeleteConfirm) {

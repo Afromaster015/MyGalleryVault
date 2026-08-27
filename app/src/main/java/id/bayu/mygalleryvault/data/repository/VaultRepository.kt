@@ -14,8 +14,11 @@ import id.bayu.mygalleryvault.core.storage.VaultStorage
 import id.bayu.mygalleryvault.data.local.AppDatabase
 import id.bayu.mygalleryvault.data.local.FolderEntity
 import id.bayu.mygalleryvault.data.local.VaultFileEntity
+import id.bayu.mygalleryvault.domain.model.CancelledSignal
 import id.bayu.mygalleryvault.domain.model.ImportOutcome
 import id.bayu.mygalleryvault.domain.model.SortOption
+import id.bayu.mygalleryvault.domain.model.TransferCancelledException
+import id.bayu.mygalleryvault.domain.model.TransferProgress
 import id.bayu.mygalleryvault.domain.model.VaultEntry
 import id.bayu.mygalleryvault.domain.model.VaultFile
 import id.bayu.mygalleryvault.domain.model.VaultFolder
@@ -77,6 +80,16 @@ class VaultRepository(
 
     suspend fun allFoldersOnce(): List<FolderEntity> = folderDao.all()
 
+    /**
+     * Cover strip for a folder tile: up to [limit] most recent files directly
+     * inside it, media entries preferred so covers stay visual.
+     */
+    suspend fun folderPreviewFiles(folderId: Long, limit: Int): List<VaultFile> =
+        fileDao.recentInFolder(folderId, limit)
+            .map { it.toModel() }
+            .sortedByDescending { it.isImage || it.isVideo }
+            .take(limit)
+
     // ---------- Folder ops (§16) ----------
 
     suspend fun createFolder(parentId: Long?, name: String): Long {
@@ -111,24 +124,61 @@ class VaultRepository(
     // ---------- Import (§9, §10, §31) ----------
 
     @SuppressLint("Recycle")
-    suspend fun importUris(uris: List<Uri>, targetFolderId: Long?, moveOriginals: Boolean): ImportOutcome {
+    suspend fun importUris(
+        uris: List<Uri>,
+        targetFolderId: Long?,
+        moveOriginals: Boolean,
+        onProgress: ((TransferProgress) -> Unit)? = null,
+        isCancelled: (() -> Boolean)? = null,
+    ): ImportOutcome {
         val key = checkNotNull(VaultSession.masterKey) { "Vault terkunci" }
         var succeeded = 0
         val copiedNotMoved = mutableListOf<String>()
         val failed = mutableListOf<String>()
 
-        for (uri in uris) {
+        // Resolve names/sizes up front so the (n/total) markers stay accurate even
+        // when a middle item fails or is skipped.
+        val resolved: List<Triple<Uri, String, Long>> = uris.map { uri ->
+            val name = queryDisplayName(uri) ?: "file_${System.currentTimeMillis()}"
+            Triple(uri, name, querySize(uri))
+        }
+        val total = resolved.size
+
+        for ((index, res) in resolved.withIndex()) {
+            val (uri, displayName, declaredSize) = res
             try {
-                val displayName = queryDisplayName(uri) ?: "file_${System.currentTimeMillis()}"
+                if (isCancelled?.invoke() == true) throw CancelledSignal()
+                fun publish(done: Long, size: Long) {
+                    onProgress?.invoke(
+                        TransferProgress(
+                            kind = id.bayu.mygalleryvault.domain.model.TransferKind.IMPORT,
+                            totalItems = total,
+                            completedItems = index,
+                            currentItemName = displayName,
+                            currentItemIndex = index + 1,
+                            itemBytesDone = done,
+                            itemBytesTotal = size,
+                        )
+                    )
+                }
+                publish(0, declaredSize)
+
                 val mime = context.contentResolver.getType(uri)
                     ?: guessMimeFromName(displayName)
                     ?: "application/octet-stream"
 
                 val input = context.contentResolver.openInputStream(uri)
                     ?: throw IOException("Tidak dapat membaca file")
-                val (encName, size) = withContext(Dispatchers.IO) {
-                    input.use { storage.importStream(it, key) }
+                val trackedInput = when {
+                    onProgress != null || isCancelled != null ->
+                        ProgressInputStream(input, declaredSize, ::publish, isCancelled)
+
+                    else -> input
                 }
+                val (encName, size) = withContext(Dispatchers.IO) {
+                    trackedInput.use { storage.importStream(it, key) }
+                }
+                publish(size, size)
 
                 var thumbRef: String? = null
                 if (mime.startsWith("image/")) {
@@ -158,8 +208,13 @@ class VaultRepository(
                 if (moveOriginals && !deleteOriginal(uri)) {
                     copiedNotMoved.add(displayName)
                 }
+            } catch (c: CancelledSignal) {
+                throw TransferCancelledException(
+                    succeeded,
+                    "Import dibatalkan ($succeeded dari $total file selesai)",
+                )
             } catch (_: Exception) {
-                failed.add(uri.lastPathSegment ?: uri.toString())
+                failed.add(displayName)
             }
         }
         return ImportOutcome(uris.size, succeeded, copiedNotMoved, failed)
@@ -240,14 +295,52 @@ class VaultRepository(
 
     // ---------- Export (§34) ----------
 
-    suspend fun exportFile(fileId: Long, destUri: Uri) {
+    suspend fun exportFile(
+        fileId: Long,
+        destUri: Uri,
+        onItemProgress: ((done: Long, total: Long) -> Unit)? = null,
+        isCancelled: (() -> Boolean)? = null,
+    ) {
         val key = checkNotNull(VaultSession.masterKey) { "Vault terkunci" }
         val entity = fileDao.byId(fileId) ?: throw IOException("File tidak ditemukan")
-        withContext(Dispatchers.IO) {
-            context.contentResolver.openOutputStream(destUri)?.use { out ->
-                storage.openDecrypted(entity.encryptedName, key, out)
-            } ?: throw IOException("Tidak dapat membuka tujuan export")
+        try {
+            withContext(Dispatchers.IO) {
+                context.contentResolver.openOutputStream(destUri)?.buffered()?.use { raw ->
+                    writeDecryptedTracked(entity, key, raw, onItemProgress, isCancelled)
+                } ?: throw IOException("Tidak dapat membuka tujuan export")
+            }
+        } catch (c: CancelledSignal) {
+            throw TransferCancelledException(0, "Export dibatalkan")
         }
+    }
+
+    /**
+     * Streaming decryption to [rawOut] with optional realtime byte progress and
+     * cooperative cancellation. The cancellation signal surfaces from inside
+     * [storage.openDecrypted] so even huge videos abort mid-stream.
+     */
+    private fun writeDecryptedTracked(
+        entity: VaultFileEntity,
+        key: javax.crypto.SecretKey,
+        rawOut: java.io.OutputStream,
+        onItemProgress: ((Long, Long) -> Unit)?,
+        isCancelled: (() -> Boolean)?,
+    ) {
+        if (onItemProgress == null && isCancelled == null) {
+            storage.openDecrypted(entity.encryptedName, key, rawOut)
+            return
+        }
+        val tracked =
+            when {
+                onItemProgress != null -> {
+                    val pub = ByteProgressPublisher(onItemProgress)
+                    ProgressOutputStream(rawOut, entity.size, pub, isCancelled)
+                }
+
+                else -> CancelCheckingOutputStream(rawOut, isCancelled!!)
+            }
+        storage.openDecrypted(entity.encryptedName, key, tracked)
+        if (onItemProgress != null && entity.size > 0) onItemProgress(entity.size, entity.size)
     }
 
     /**
@@ -255,57 +348,66 @@ class VaultRepository(
      * Works reliably on emulators and devices where SAF CreateDocument may fail.
      * Returns the content URI of the saved file, or throws on failure.
      */
-    suspend fun exportToDownloads(fileId: Long, displayName: String): Uri {
+    suspend fun exportToDownloads(
+        fileId: Long,
+        displayName: String,
+        onItemProgress: ((done: Long, total: Long) -> Unit)? = null,
+        isCancelled: (() -> Boolean)? = null,
+    ): Uri {
         val key = checkNotNull(VaultSession.masterKey) { "Vault terkunci" }
         val entity = fileDao.byId(fileId) ?: throw IOException("File tidak ditemukan")
-        return withContext(Dispatchers.IO) {
-            val resolver = context.contentResolver
-            val mimeType = entity.mimeType.ifBlank { "application/octet-stream" }
-            val safeName = safeExportName(displayName)
+        try {
+            return withContext(Dispatchers.IO) {
+                val resolver = context.contentResolver
+                val mimeType = entity.mimeType.ifBlank { "application/octet-stream" }
+                val safeName = safeExportName(displayName)
 
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-                val values = android.content.ContentValues().apply {
-                    put(android.provider.MediaStore.Downloads.DISPLAY_NAME, safeName)
-                    put(android.provider.MediaStore.Downloads.MIME_TYPE, mimeType)
-                    put(android.provider.MediaStore.Downloads.IS_PENDING, 1)
-                }
-                val uri = try {
-                    resolver.insert(
-                        android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
-                    )
-                } catch (e: Exception) {
-                    throw IOException("Gagal membuat file di Downloads: ${e.message}")
-                } ?: throw IOException("Tidak dapat membuat file di Downloads")
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                    val values = android.content.ContentValues().apply {
+                        put(android.provider.MediaStore.Downloads.DISPLAY_NAME, safeName)
+                        put(android.provider.MediaStore.Downloads.MIME_TYPE, mimeType)
+                        put(android.provider.MediaStore.Downloads.IS_PENDING, 1)
+                    }
+                    val uri = try {
+                        resolver.insert(
+                            android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
+                        )
+                    } catch (e: Exception) {
+                        throw IOException("Gagal membuat file di Downloads: ${e.message}")
+                    } ?: throw IOException("Tidak dapat membuat file di Downloads")
 
-                try {
-                    resolver.openOutputStream(uri)?.use { out ->
-                        storage.openDecrypted(entity.encryptedName, key, out)
-                    } ?: throw IOException("Tidak dapat menulis ke Downloads")
+                    try {
+                        resolver.openOutputStream(uri)?.buffered()?.use { raw ->
+                            writeDecryptedTracked(entity, key, raw, onItemProgress, isCancelled)
+                        } ?: throw IOException("Tidak dapat menulis ke Downloads")
 
-                    values.clear()
-                    values.put(android.provider.MediaStore.Downloads.IS_PENDING, 0)
-                    resolver.update(uri, values, null, null)
-                } catch (e: Exception) {
-                    runCatching { resolver.delete(uri, null, null) }
-                    throw e
+                        values.clear()
+                        values.put(android.provider.MediaStore.Downloads.IS_PENDING, 0)
+                        resolver.update(uri, values, null, null)
+                    } catch (e: Exception) {
+                        runCatching { resolver.delete(uri, null, null) }
+                        throw e
+                    }
+                    uri
+                } else {
+                    val dir = java.io.File(context.getExternalFilesDir(null), "Download")
+                    if (!dir.exists()) dir.mkdirs()
+                    var outFile = java.io.File(dir, safeName)
+                    var n = 1
+                    while (outFile.exists()) {
+                        val base = safeName.substringBeforeLast('.', safeName)
+                        val ext = safeName.substringAfterLast('.', "")
+                        outFile = java.io.File(dir, "$base($n)." + if (ext.isBlank()) "bin" else ext)
+                        n++
+                    }
+                    outFile.outputStream().buffered().use { raw ->
+                        writeDecryptedTracked(entity, key, raw, onItemProgress, isCancelled)
+                    }
+                    android.net.Uri.fromFile(outFile)
                 }
-                uri
-            } else {
-                val dir = java.io.File(context.getExternalFilesDir(null), "Download")
-                if (!dir.exists()) dir.mkdirs()
-                var outFile = java.io.File(dir, safeName)
-                var n = 1
-                while (outFile.exists()) {
-                    val base = safeName.substringBeforeLast('.', safeName)
-                    val ext = safeName.substringAfterLast('.', "")
-                    outFile = java.io.File(dir, "$base($n)." + if (ext.isBlank()) "bin" else ext)
-                    n++
-                }
-                outFile.outputStream().buffered().use { out ->
-                    storage.openDecrypted(entity.encryptedName, key, out)
-                }
-                android.net.Uri.fromFile(outFile)
             }
+        } catch (c: CancelledSignal) {
+            throw TransferCancelledException(0, "Export dibatalkan")
         }
     }
 
@@ -319,7 +421,12 @@ class VaultRepository(
      * folder name containing spaces). The tree URI must first be converted to
      * the root document URI via buildDocumentUriUsingTree.
      */
-    suspend fun exportIntoDir(fileId: Long, treeUri: Uri): Boolean {
+    suspend fun exportIntoDir(
+        fileId: Long,
+        treeUri: Uri,
+        onItemProgress: ((done: Long, total: Long) -> Unit)? = null,
+        isCancelled: (() -> Boolean)? = null,
+    ): Boolean {
         val entity = fileDao.byId(fileId) ?: return false
         val resolver = context.contentResolver
 
@@ -344,8 +451,17 @@ class VaultRepository(
                 safeExportName(entity.originalName),
             )
         }.getOrNull() ?: return false
-        exportFile(fileId, docUri)
-        return true
+        try {
+            exportFile(fileId, docUri, onItemProgress, isCancelled)
+            return true
+        } catch (c: CancelledSignal) {
+            // Never leave a half-written plaintext document in a public directory.
+            runCatching { android.provider.DocumentsContract.deleteDocument(resolver, docUri) }
+            throw TransferCancelledException(0, "Export dibatalkan")
+        } catch (e: Exception) {
+            runCatching { android.provider.DocumentsContract.deleteDocument(resolver, docUri) }
+            throw e
+        }
     }
 
     /** Full plaintext bytes; only used for internal viewers, never written to disk. */
@@ -438,32 +554,74 @@ class VaultRepository(
      * atom sits because [android.media.MediaDataSource] seeks freely over the
      * decrypted view. Safe to call repeatedly; no-op when not applicable.
      */
+    /**
+     * When a thumbRef is present but its blob cannot be decrypted/decoded, the
+     * reference is stale (older bug or partial write); delete it so generation
+     * below can run. Returns true when a healthy thumbnail already exists.
+     */
+    private suspend fun hasHealthyThumbnail(entity: VaultFileEntity, key: javax.crypto.SecretKey): Boolean {
+        val ref = entity.thumbRef ?: return false
+        if (storage.loadThumbnail(ref, key) != null) return true
+        storage.deleteThumbnail(ref)
+        fileDao.setThumbRef(entity.id, null)
+        return false
+    }
+
     suspend fun generateVideoThumbnail(fileId: Long): Boolean {
-        val entity = fileDao.byId(fileId) ?: return false
-        if (!entity.mimeType.startsWith("video/") || entity.thumbRef != null) return false
-        val key = checkNotNull(VaultSession.masterKey) { "Vault terkunci" }
+        val entity0 = fileDao.byId(fileId) ?: return false
+        if (!entity0.mimeType.startsWith("video/")) return false
+        val key = VaultSession.masterKey ?: return false
+        // A stale/corrupt thumbnail must not wedge regeneration forever.
+        if (hasHealthyThumbnail(entity0, key)) return false
+        val entity = entity0
         // Auto-detect actual format from file header instead of trusting DB version
         val actualVersion = storage.detectEncryptionVersion(entity.encryptedName)
-        if (actualVersion < 2) return false
+        if (actualVersion < 2) {
+            android.util.Log.d("SV_Thumb", "vthumb id=$fileId skip: v$actualVersion")
+            return false
+        }
+        // MediaMetadataRetriever is unreliable (native >2 GiB truncation / OOM)
+        // on very large sources - skip rather than risk a process crash.
+        val container = storage.objectSize(entity.encryptedName)
+        if (container > MAX_RETRIEVER_SOURCE_BYTES) {
+            android.util.Log.d(
+                "SV_Thumb", "vthumb id=$fileId skip: $container bytes > retriever cap"
+            )
+            return false
+        }
+        android.util.Log.d("SV_Thumb", "vthumb id=$fileId start size=$container")
         return withContext(Dispatchers.IO) {
             try {
                 storage.openRandomReader(entity.encryptedName, key).use { reader ->
                     VaultMediaDataSource(reader).useWithRetriever { retriever ->
-                        val frame = retriever.getFrameAtTime(
-                            0,
-                            android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
-                        ) ?: return@useWithRetriever false
-                        val scaled = scaleDown(frame, THUMB_SIZE)
-                        val bos = java.io.ByteArrayOutputStream()
-                        scaled.compress(Bitmap.CompressFormat.JPEG, 80, bos)
-                        if (scaled !== frame) scaled.recycle()
-                        frame.recycle()
-                        val ref = storage.saveThumbnail(bos.toByteArray(), key)
+                        val frame = if (android.os.Build.VERSION.SDK_INT >= 27) {
+                            // Bound decoder memory on high-resolution sources.
+                            retriever.getScaledFrameAtTime(
+                                0,
+                                android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                                THUMB_SIZE,
+                                THUMB_SIZE,
+                            )
+                        } else {
+                            retriever.getFrameAtTime(
+                                0,
+                                android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                            )
+                        } ?: run {
+                            android.util.Log.d("SV_Thumb", "vthumb id=$fileId frame=null")
+                            return@useWithRetriever false
+                        }
+                        val ref = storeThumbnailBitmap(frame, key)
                         fileDao.setThumbRef(fileId, ref)
+                        android.util.Log.d("SV_Thumb", "vthumb id=$fileId OK")
                         true
                     }
                 }
-            } catch (_: Exception) {
+            } catch (t: Throwable) {
+                android.util.Log.d(
+                    "SV_Thumb",
+                    "vthumb id=$fileId FAIL ${t.javaClass.simpleName}: ${t.message}",
+                )
                 false
             }
         }
@@ -473,10 +631,17 @@ class VaultRepository(
     suspend fun probeVideoDurationMs(fileId: Long): Long? {
         val entity = fileDao.byId(fileId) ?: return null
         if (!entity.mimeType.startsWith("video/")) return null
-        val key = checkNotNull(VaultSession.masterKey) { "Vault terkunci" }
+        // Lock can race this call (auto-lock between tap and effect); a locked
+        // vault simply means "cannot probe now" - ExoPlayer's timeline fills
+        // the duration after prepare() anyway.
+        val key = VaultSession.masterKey ?: return null
         // Auto-detect actual format from file header instead of trusting DB version
         val actualVersion = storage.detectEncryptionVersion(entity.encryptedName)
         if (actualVersion < 2) return null
+        // Giant files: let ExoPlayer's own timeline provide the duration after
+        // prepare() instead of touching the platform retriever.
+        if (storage.objectSize(entity.encryptedName) > MAX_RETRIEVER_SOURCE_BYTES) return null
+        android.util.Log.d("SV_Player", "duration probe id=$fileId via retriever")
         return withContext(Dispatchers.IO) {
             try {
                 storage.openRandomReader(entity.encryptedName, key).use { reader ->
@@ -500,6 +665,63 @@ class VaultRepository(
             (bitmap.height * scale).toInt().coerceAtLeast(1),
             true,
         )
+    }
+
+    /** Downscales, JPEG-compresses, encrypts and persists a thumbnail; recycles inputs. */
+    private fun storeThumbnailBitmap(bitmap: Bitmap, key: javax.crypto.SecretKey): String {
+        val scaled = scaleDown(bitmap, THUMB_SIZE)
+        val bos = java.io.ByteArrayOutputStream()
+        scaled.compress(Bitmap.CompressFormat.JPEG, 80, bos)
+        if (scaled !== bitmap) scaled.recycle()
+        bitmap.recycle()
+        return storage.saveThumbnail(bos.toByteArray(), key)
+    }
+
+    /** Upper bound for decrypting an image fully into RAM just to build its thumbnail. */
+    private val MAX_THUMB_SOURCE_BYTES = 128L * 1024 * 1024
+
+    /**
+     * Above this container size the platform MediaMetadataRetriever tends to
+     * crash (native >2 GiB truncation on many builds); playback itself keeps
+     * working through ExoPlayer + [VaultDataSource].
+     */
+    private val MAX_RETRIEVER_SOURCE_BYTES = 2_000_000_000L
+
+    /**
+     * Builds the missing image thumbnail on demand from the stored encrypted
+     * object (used when an import-time decode failed or legacy rows predate it).
+     */
+    suspend fun generateImageThumbnail(fileId: Long): Boolean {
+        val entity0 = fileDao.byId(fileId) ?: return false
+        if (!entity0.mimeType.startsWith("image/")) return false
+        if (entity0.size <= 0 || entity0.size > MAX_THUMB_SOURCE_BYTES) return false
+        val key = VaultSession.masterKey ?: return false
+        // A stale/corrupt thumbnail must not wedge regeneration forever.
+        if (hasHealthyThumbnail(entity0, key)) return false
+        val entity = entity0
+        return withContext(Dispatchers.IO) {
+            try {
+                val bytes = storage.readDecrypted(entity.encryptedName, key)
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+                    return@withContext false
+                }
+                var sample = 1
+                while (bounds.outWidth / sample > THUMB_SIZE * 2 || bounds.outHeight / sample > THUMB_SIZE * 2) {
+                    sample *= 2
+                }
+                val bmp = BitmapFactory.decodeByteArray(
+                    bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample },
+                ) ?: return@withContext false
+                bytes.fill(0)
+                val ref = storeThumbnailBitmap(bmp, key)
+                fileDao.setThumbRef(fileId, ref)
+                true
+            } catch (_: Exception) {
+                false
+            }
+        }
     }
 
     // ---------- Subtitles (vault-side matching) ----------
@@ -561,7 +783,6 @@ class VaultRepository(
         val ref = entity.thumbRef ?: return null
         return withContext(Dispatchers.IO) { storage.loadThumbnail(ref, key) }
     }
-
     // ---------- Stats (§33) ----------
 
     suspend fun stats(): VaultStats = VaultStats(
@@ -664,6 +885,18 @@ class VaultRepository(
         return null
     }
 
+    /** Declared byte size from SAF metadata; -1 when the provider does not report it. */
+    private fun querySize(uri: Uri): Long =
+        context.contentResolver.query(
+            uri, arrayOf(OpenableColumns.SIZE), null, null, null,
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val idx = cursor.getColumnIndex(OpenableColumns.SIZE)
+                if (idx >= 0 && !cursor.isNull(idx)) return cursor.getLong(idx)
+            }
+            -1L
+        } ?: -1L
+
     private fun guessMimeFromName(name: String): String? {
         val ext = MimeTypeMap.getFileExtensionFromUrl(name)?.lowercase() ?: return null
         return MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
@@ -739,5 +972,141 @@ class VaultRepository(
                 else -> null
             }
         }
+    }
+}
+
+/** Throttles high-frequency byte callbacks to a UI-friendly rate. */
+private class ByteProgressPublisher(private val sink: (done: Long, total: Long) -> Unit) {
+
+    private var lastMs = 0L
+    private var lastFrac = -1f
+
+    operator fun invoke(done: Long, total: Long) {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (total > 0 && done >= total) {
+            lastMs = now
+            lastFrac = 1f
+            sink(done, total)
+            return
+        }
+        if (total > 0) {
+            val frac = done.toFloat() / total
+            if (now - lastMs < THROTTLE_MS &&
+                (lastFrac < 0f || frac - lastFrac < MIN_STEP)
+            ) {
+                return
+            }
+            lastFrac = frac
+        } else {
+            // Unknown size: emit on a slower fixed cadence so the bar still moves.
+            if (now - lastMs < UNKNOWN_THROTTLE_MS) return
+        }
+        lastMs = now
+        sink(done, total)
+    }
+
+    companion object {
+        private const val THROTTLE_MS = 120L
+        private const val MIN_STEP = 0.004f
+        private const val UNKNOWN_THROTTLE_MS = 400L
+    }
+}
+
+/**
+ * Input side progress + cooperative cancellation for imports. Every read both
+ * updates the counter and checks the cancel flag, so even the middle of a huge
+ * copy aborts immediately instead of waiting for the file to finish.
+ */
+private class ProgressInputStream(
+    private val source: java.io.InputStream,
+    private val totalBytes: Long,
+    private val emit: (done: Long, total: Long) -> Unit,
+    private val cancelled: (() -> Boolean)?,
+) : java.io.InputStream() {
+
+    private var count = 0L
+
+    override fun read(): Int {
+        checkCancel()
+        val v = source.read()
+        if (v >= 0) bump(1)
+        return v
+    }
+
+    override fun read(b: ByteArray, off: Int, len: Int): Int {
+        checkCancel()
+        val n = source.read(b, off, len)
+        if (n > 0) bump(n)
+        return n
+    }
+
+    override fun available(): Int = source.available()
+
+    override fun close() = source.close()
+
+    private fun bump(n: Int) {
+        count += n
+        emit(count, totalBytes)
+    }
+
+    private fun checkCancel() {
+        if (cancelled?.invoke() == true) throw CancelledSignal()
+    }
+}
+
+/** Output-side progress + cancellation for exports (decrypt path writes through here). */
+private class ProgressOutputStream(
+    private val sink: java.io.OutputStream,
+    private val totalBytes: Long,
+    private val publisher: ByteProgressPublisher,
+    private val cancelled: (() -> Boolean)?,
+) : java.io.OutputStream() {
+
+    private var count = 0L
+
+    override fun write(b: Int) {
+        cancelled?.let { if (it()) throw CancelledSignal() }
+        sink.write(b)
+        bump(1)
+    }
+
+    override fun write(b: ByteArray, off: Int, len: Int) {
+        cancelled?.let { if (it()) throw CancelledSignal() }
+        sink.write(b, off, len)
+        bump(len)
+    }
+
+    override fun flush() = sink.flush()
+
+    override fun close() = sink.close()
+
+    private fun bump(n: Int) {
+        count += n
+        publisher(count, totalBytes)
+    }
+}
+
+/** Cancellation-only passthrough used when no percent tracking is requested. */
+private class CancelCheckingOutputStream(
+    private val sink: java.io.OutputStream,
+    private val cancelled: () -> Boolean,
+) : java.io.OutputStream() {
+
+    override fun write(b: Int) {
+        check()
+        sink.write(b)
+    }
+
+    override fun write(b: ByteArray, off: Int, len: Int) {
+        check()
+        sink.write(b, off, len)
+    }
+
+    override fun flush() = sink.flush()
+
+    override fun close() = sink.close()
+
+    private fun check() {
+        if (cancelled()) throw CancelledSignal()
     }
 }

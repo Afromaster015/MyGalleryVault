@@ -22,7 +22,8 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:launchMode="singleTask" />
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden" />
 
         <!-- Launcher entry lives on an alias so "hide icon" (PRD §29) can disable it. -->
         <activity-alias

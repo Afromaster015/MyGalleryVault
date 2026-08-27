@@ -49,6 +49,10 @@ class SetupViewModel(private val auth: AuthRepository) : ViewModel() {
             onResult("PIN minimal ${AuthRepository.MIN_PIN_LENGTH} digit")
             return
         }
+        if (pin.size > AuthRepository.MAX_PIN_LENGTH) {
+            onResult("PIN maksimal ${AuthRepository.MAX_PIN_LENGTH} digit")
+            return
+        }
         viewModelScope.launch {
             try {
                 auth.setupVault(pin)
@@ -91,7 +95,7 @@ fun SetupScreen(onSetupComplete: () -> Unit, modifier: Modifier = Modifier) {
 
         OutlinedTextField(
             value = pin,
-            onValueChange = { pin = it.filter(Char::isDigit).take(12) },
+            onValueChange = { pin = it.filter(Char::isDigit).take(AuthRepository.MAX_PIN_LENGTH) },
             label = { Text(stringResource(R.string.setup_pin_hint)) },
             visualTransformation = PasswordVisualTransformation(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
@@ -101,7 +105,7 @@ fun SetupScreen(onSetupComplete: () -> Unit, modifier: Modifier = Modifier) {
         Spacer(Modifier.height(12.dp))
         OutlinedTextField(
             value = confirm,
-            onValueChange = { confirm = it.filter(Char::isDigit).take(12) },
+            onValueChange = { confirm = it.filter(Char::isDigit).take(AuthRepository.MAX_PIN_LENGTH) },
             label = { Text(stringResource(R.string.setup_pin_confirm)) },
             visualTransformation = PasswordVisualTransformation(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),

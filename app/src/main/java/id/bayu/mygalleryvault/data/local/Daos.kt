@@ -16,6 +16,9 @@ interface VaultFileDao {
     @Query("SELECT * FROM vault_files WHERE originalName LIKE '%' || :query || '%' ORDER BY originalName COLLATE NOCASE")
     suspend fun search(query: String): List<VaultFileEntity>
 
+    @Query("SELECT * FROM vault_files WHERE folderId IS :folderId ORDER BY createdAt DESC LIMIT :limit")
+    suspend fun recentInFolder(folderId: Long?, limit: Int): List<VaultFileEntity>
+
     @Query("SELECT * FROM vault_files ORDER BY createdAt DESC")
     fun all(): Flow<List<VaultFileEntity>>
 

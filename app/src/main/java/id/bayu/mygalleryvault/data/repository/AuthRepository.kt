@@ -67,9 +67,11 @@ class AuthRepository(
 
     suspend fun setupVault(pin: CharArray) {
         require(pin.size >= MIN_PIN_LENGTH) { "PIN minimal $MIN_PIN_LENGTH digit" }
+        require(pin.size <= MAX_PIN_LENGTH) { "PIN maksimal $MAX_PIN_LENGTH digit" }
         // PBKDF2 is CPU-heavy; never run it on the caller's (main) thread.
         val key = withContext(Dispatchers.Default) { keyManager.createVault(pin) }
         settingsDao.put(SettingEntity(SettingsKeys.FAILED_COUNT, "0"))
+        settingsDao.put(SettingEntity(SettingsKeys.PIN_LENGTH, pin.size.toString()))
         VaultSession.unlock(key, VaultSlot.REAL)
     }
 
@@ -78,6 +80,9 @@ class AuthRepository(
         if (!isVaultCreated) return Result.failure(IllegalStateException("Vault utama belum ada"))
         if (pin.size < MIN_PIN_LENGTH) {
             return Result.failure(IllegalArgumentException("PIN minimal $MIN_PIN_LENGTH digit"))
+        }
+        if (pin.size > MAX_PIN_LENGTH) {
+            return Result.failure(IllegalArgumentException("PIN maksimal $MAX_PIN_LENGTH digit"))
         }
         val matchesReal = withContext(Dispatchers.Default) {
             runCatching { keyManager.unlockWithPin(pin, VaultSlot.REAL) }.getOrNull() != null
@@ -111,6 +116,7 @@ class AuthRepository(
         val realKey = runCatching { keyManager.unlockWithPin(pin, VaultSlot.REAL) }.getOrNull()
         if (realKey != null) {
             resetFailedCount()
+            learnPinLengthOnce(pin.size)
             VaultSession.unlock(realKey, VaultSlot.REAL)
             return@withContext UnlockResult.Success(VaultSlot.REAL)
         }
@@ -136,8 +142,12 @@ class AuthRepository(
         val breach = threshold > 0 && newCount % threshold == 0 && breakInAlertEnabled()
         // When [breach] is set the lock-flow caller records a single BREAKIN_ALERT
         // via [recordBreakin], optionally attaching an intruder snapshot (§28).
-        val backoff = minOf(BACKOFF_BASE_MS shl (newCount - 1).coerceAtMost(5), MAX_BACKOFF_MS)
-        UnlockResult.Failed(newCount, backoff, breakInDetected = breach)
+        // Linear ramp (user policy): wrong PIN #n locks the keypad for n x 5 s,
+        // capped at 30 s -> 5/10/15/20/25/30...
+        val backoff = minOf(newCount * BACKOFF_STEP_MS, MAX_BACKOFF_MS)
+        val lockUntil = System.currentTimeMillis() + backoff
+        settingsDao.put(SettingEntity(SettingsKeys.LOCKED_UNTIL, lockUntil.toString()))
+        UnlockResult.Failed(newCount, backoff, breakInDetected = breach, lockUntilMillis = lockUntil)
     }
 
     /**
@@ -256,6 +266,7 @@ class AuthRepository(
 
     suspend fun changePin(oldPin: CharArray, newPin: CharArray): Boolean {
         require(newPin.size >= MIN_PIN_LENGTH) { "PIN minimal $MIN_PIN_LENGTH digit" }
+        require(newPin.size <= MAX_PIN_LENGTH) { "PIN maksimal $MAX_PIN_LENGTH digit" }
         val currentSlot = VaultSession.slot ?: VaultSlot.REAL
         return withContext(Dispatchers.Default) {
             val verified = try {
@@ -265,6 +276,9 @@ class AuthRepository(
             } ?: return@withContext false
             val master = VaultSession.masterKey ?: verified
             keyManager.changePin(newPin, master, currentSlot)
+            if (currentSlot == VaultSlot.REAL) {
+                settingsDao.put(SettingEntity(SettingsKeys.PIN_LENGTH, newPin.size.toString()))
+            }
             verified.encoded.fill(0)
             true
         }
@@ -272,8 +286,28 @@ class AuthRepository(
 
     // ---------- helpers ----------
 
+    /**
+     * Legacy reconciliation: the digit count cannot be derived from the PBKDF2
+     * blob, so the first successful PIN login records its length. From then on
+     * the lock screen shows exactly that many dot slots.
+     */
+    private suspend fun learnPinLengthOnce(typedLength: Int) {
+        if (storedPinLength() == null && typedLength in 1..64) {
+            settingsDao.put(SettingEntity(SettingsKeys.PIN_LENGTH, typedLength.toString()))
+        }
+    }
+
+    /** Stored primary-PIN length, or null for legacy vaults not reconciled yet. */
+    suspend fun storedPinLength(): Int? =
+        settingsDao.get(SettingsKeys.PIN_LENGTH)?.toIntOrNull()?.takeIf { it >= MIN_PIN_LENGTH }
+
+    /** Persisted keypad lockout deadline (0 when not locked). */
+    suspend fun lockedUntilMillis(): Long =
+        settingsDao.get(SettingsKeys.LOCKED_UNTIL)?.toLongOrNull() ?: 0L
+
     private suspend fun resetFailedCount() {
         settingsDao.put(SettingEntity(SettingsKeys.FAILED_COUNT, "0"))
+        settingsDao.put(SettingEntity(SettingsKeys.LOCKED_UNTIL, "0"))
     }
 
     private fun parseMetadata(metadata: String?): Map<String, String> =
@@ -286,10 +320,12 @@ class AuthRepository(
 
     companion object {
         const val MIN_PIN_LENGTH = 6
+        /** New/change PIN upper bound (legacy vaults may hold longer PINs). */
+        const val MAX_PIN_LENGTH = 10
         const val DEFAULT_THRESHOLD = 5
         const val EVENT_FAILED_ATTEMPT = "FAILED_ATTEMPT"
         const val EVENT_BREAKIN_ALERT = "BREAKIN_ALERT"
-        private const val BACKOFF_BASE_MS = 1000L
+        private const val BACKOFF_STEP_MS = 5_000L
         private const val MAX_BACKOFF_MS = 30_000L
     }
 }

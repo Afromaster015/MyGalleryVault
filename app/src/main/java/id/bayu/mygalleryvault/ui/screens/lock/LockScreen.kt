@@ -39,6 +39,7 @@ import id.bayu.mygalleryvault.ui.components.BiometricHelper
 import id.bayu.mygalleryvault.ui.components.PinKeypad
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -51,13 +52,46 @@ class LockViewModel(private val auth: AuthRepository) : ViewModel() {
         val error: String? = null,
         val attempts: Int = 0,
         val lockedUntilMillis: Long = 0L,
+        /** Live remaining lockout, ticked every 250 ms - drives countdown + keypad. */
+        val lockRemainingMs: Long = 0L,
         val biometricAvailable: Boolean = false,
         val biometricEnabled: Boolean = false,
         val busy: Boolean = false,
+        /** Exact primary-PIN length once known; null for legacy unreconciled vaults. */
+        val pinSlots: Int? = null,
     )
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state
+
+    init {
+        viewModelScope.launch {
+            val slots = auth.storedPinLength()
+            if (slots != null) {
+                _state.value = _state.value.copy(pinSlots = slots)
+            }
+        }
+        // A lockout that survived a process kill (persisted deadline) resumes here.
+        viewModelScope.launch {
+            val deadline = auth.lockedUntilMillis()
+            if (deadline > System.currentTimeMillis()) {
+                _state.value = _state.value.copy(lockedUntilMillis = deadline)
+            }
+        }
+        // Ticker: keeps the countdown text live and re-enables the keypad at
+        // exactly the right moment without the user leaving/reopening the app.
+        viewModelScope.launch {
+            while (viewModelScope.isActive) {
+                val until = _state.value.lockedUntilMillis
+                val remaining =
+                    if (until <= 0L) 0L else (until - System.currentTimeMillis()).coerceAtLeast(0L)
+                if (remaining != _state.value.lockRemainingMs) {
+                    _state.value = _state.value.copy(lockRemainingMs = remaining)
+                }
+                kotlinx.coroutines.delay(250)
+            }
+        }
+    }
 
     fun onDigit(digit: Char) {
         val s = _state.value
@@ -87,7 +121,11 @@ class LockViewModel(private val auth: AuthRepository) : ViewModel() {
                         pin = "",
                         attempts = result.attemptCount,
                         error = "PIN salah (percobaan ke-${result.attemptCount})",
-                        lockedUntilMillis = System.currentTimeMillis() + result.backoffMillis,
+                        lockedUntilMillis = if (result.lockUntilMillis > 0L) {
+                            result.lockUntilMillis
+                        } else {
+                            System.currentTimeMillis() + result.backoffMillis
+                        },
                     )
                     if (result.breakInDetected) {
                         handleBreakInBreach(activity, result.attemptCount)
@@ -160,7 +198,12 @@ class LockViewModel(private val auth: AuthRepository) : ViewModel() {
     }
 
     companion object {
-        const val MAX_PIN = 12
+        /**
+         * Typing headroom at the keypad only - kept generous so legacy vaults
+         * with a PIN longer than the current 10-digit setup cap can still log
+         * in. Creation/change limits live in [AuthRepository].
+         */
+        const val MAX_PIN = 16
     }
 }
 
@@ -197,7 +240,17 @@ fun LockScreen(
         Text("Masukkan PIN Anda", style = MaterialTheme.typography.bodyMedium)
 
         Spacer(Modifier.height(24.dp))
-        PinDots(pinLength = state.pin.length)
+        PinDots(pinLength = state.pin.length, slotCount = state.pinSlots)
+
+        val remainSec = ((state.lockRemainingMs + 999) / 1000).toInt()
+        if (remainSec > 0) {
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "Coba lagi dalam ${remainSec}s",
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.titleSmall,
+            )
+        }
         Spacer(Modifier.height(16.dp))
 
         state.error?.let {
@@ -207,8 +260,9 @@ fun LockScreen(
 
         Spacer(Modifier.height(8.dp))
         PinKeypad(
-            enabled = !state.busy && System.currentTimeMillis() >= state.lockedUntilMillis,
-            showBiometric = state.biometricAvailable && state.biometricEnabled,
+            enabled = !state.busy && state.lockRemainingMs <= 0L,
+            showBiometric = state.biometricAvailable && state.biometricEnabled &&
+                state.lockRemainingMs <= 0L,
             onDigit = vm::onDigit,
             onBackspace = vm::onBackspace,
             onSubmit = { vm.submit(activity, onUnlocked) },
@@ -217,16 +271,34 @@ fun LockScreen(
     }
 }
 
+/**
+ * Dot slots for PIN entry. When the stored primary-PIN length is known
+ * ([slotCount] != null) exactly that many dots render - e.g. a 9-digit PIN
+ * shows 9 slots - laid out as one tidy centered row (10 dots always fit);
+ * legacy unreconciled vaults fall back to adaptive length with wrapping.
+ */
 @Composable
-private fun PinDots(pinLength: Int) {
-    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        repeat(LockViewModel.MAX_PIN.coerceAtMost(6)) { index ->
-            Surface(
-                shape = androidx.compose.foundation.shape.CircleShape,
-                color = if (index < pinLength) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.surfaceVariant,
-                modifier = Modifier.size(14.dp),
-            ) {}
+private fun PinDots(pinLength: Int, slotCount: Int?) {
+    // Known slots render exactly as stored; an unknown (legacy, pre-reconcile)
+    // vault shows only typed dots instead of pretending a false total.
+    val total = slotCount ?: pinLength
+    val perRow = if (total > 10) 5 else 10
+    val dotSize = if (total > 10) 11.dp else 14.dp
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        List(total) { it }.chunked(perRow).forEach { rowIndices ->
+            Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                rowIndices.forEach { index ->
+                    Surface(
+                        shape = androidx.compose.foundation.shape.CircleShape,
+                        color = if (index < pinLength) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.size(dotSize),
+                    ) {}
+                }
+            }
         }
     }
 }
