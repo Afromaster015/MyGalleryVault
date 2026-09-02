@@ -68,7 +68,31 @@ object SettingsKeys {
     const val BREAK_IN_PHOTOS = "break_in_photos"
     const val SEARCH_ENGINE = "search_engine"
     const val SHIELDS_DEFAULT_ON = "shields_default_on"
+    const val SUBTITLE_SIZE_SP = "subtitle_size_sp"
+    const val SUBTITLE_TEXT_COLOR = "subtitle_text_color"
+    const val SUBTITLE_BG_COLOR = "subtitle_bg_color"
+    const val SUBTITLE_EDGE = "subtitle_edge"
 }
+
+/** Caption outline/shadow style for the video player subtitle overlay. */
+enum class SubtitleEdge(val label: String) {
+    NONE("Tanpa"),
+    OUTLINE("Garis tepi"),
+    DROP_SHADOW("Bayangan");
+
+    companion object {
+        fun fromName(value: String?): SubtitleEdge =
+            entries.firstOrNull { it.name == value } ?: OUTLINE
+    }
+}
+
+/** Persisted subtitle appearance (player). Colors are ARGB ints. */
+data class SubtitleStyle(
+    val sizeSp: Int = 22,
+    val textColor: Int = 0xFFFFFFFF.toInt(),
+    val bgColor: Int = 0x00000000,
+    val edge: SubtitleEdge = SubtitleEdge.OUTLINE,
+)
 
 /** Omnibox fallback engines for the private browser (PRD §38). */
 enum class SearchEngine(val label: String, val queryTemplate: String) {

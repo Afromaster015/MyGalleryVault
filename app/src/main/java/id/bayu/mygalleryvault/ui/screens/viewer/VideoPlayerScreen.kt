@@ -4,15 +4,20 @@ import android.app.Activity
 import android.content.Context
 import android.media.AudioManager
 import android.net.Uri
-import android.widget.Toast
+import android.os.SystemClock
+import android.util.TypedValue
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,15 +31,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.rounded.Delete
-import androidx.compose.material.icons.rounded.FileDownload
+import androidx.compose.material.icons.rounded.FormatSize
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.SaveAlt
-import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Subtitles
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material.icons.rounded.VolumeOff
+import androidx.compose.material.icons.rounded.VolumeUp
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -59,6 +62,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
@@ -76,26 +80,26 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MediaSource
+import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import id.bayu.mygalleryvault.SecureVaultApp
-import id.bayu.mygalleryvault.core.crypto.VaultSession
 import id.bayu.mygalleryvault.core.playback.PlaybackDataSourceFactory
 import id.bayu.mygalleryvault.core.playback.vaultUri
 import id.bayu.mygalleryvault.data.repository.VaultRepository
-import id.bayu.mygalleryvault.domain.model.TransferCancelledException
-import id.bayu.mygalleryvault.domain.model.TransferKind
-import id.bayu.mygalleryvault.domain.model.TransferProgress
+import id.bayu.mygalleryvault.domain.model.SubtitleEdge
+import id.bayu.mygalleryvault.domain.model.SubtitleStyle
 import id.bayu.mygalleryvault.domain.model.VaultFile
-import id.bayu.mygalleryvault.ui.components.TransferProgressDialog
 import id.bayu.mygalleryvault.ui.screens.viewer.components.SpeedSheet
 import id.bayu.mygalleryvault.ui.screens.viewer.components.SubtitleEntry
 import id.bayu.mygalleryvault.ui.screens.viewer.components.SubtitleSheet
+import id.bayu.mygalleryvault.ui.screens.viewer.components.SubtitleStyleSheet
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
-import java.io.IOException
 
 /** Legacy v1 playback decrypts to a plaintext temp; refuse beyond this. */
 private const val MAX_LEGACY_DECRYPT_BYTES = 512L * 1024 * 1024
@@ -116,10 +120,10 @@ fun VideoPlayerScreen(
     activity: FragmentActivity,
     fileId: Long,
     onBack: () -> Unit,
-    onDeleted: () -> Unit,
 ) {
     val app = activity.application as SecureVaultApp
     val repo = app.container.currentStack().repository
+    val settingsRepo = app.container.settingsRepository
     val scope = rememberCoroutineScope()
     val audioManager = remember { activity.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
     val volumeMax = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
@@ -128,7 +132,6 @@ fun VideoPlayerScreen(
     var fileName by remember { mutableStateOf("memuat…") }
     var ready by remember { mutableStateOf(false) }
     var errorText by remember { mutableStateOf<String?>(null) }
-    var showDeleteConfirm by remember { mutableStateOf(false) }
     var isV2 by remember { mutableStateOf(false) }
 
     var controlsVisible by remember { mutableStateOf(true) }
@@ -140,18 +143,52 @@ fun VideoPlayerScreen(
     var scrubPosition by remember { mutableLongStateOf(0L) }
     var baseSpeed by remember { mutableFloatStateOf(1f) }
     var boosting by remember { mutableStateOf(false) }
+    var isMuted by remember { mutableStateOf(false) }
 
     var showSpeedSheet by remember { mutableStateOf(false) }
     var showSubtitleSheet by remember { mutableStateOf(false) }
+    var showSubtitleStyleSheet by remember { mutableStateOf(false) }
 
     var activeSubs by remember { mutableStateOf<List<ActiveSubtitle>>(emptyList()) }
     var selectedSubId by remember { mutableStateOf<String?>(null) }
 
     var hudText by remember { mutableStateOf<String?>(null) }
-    var seekFlashTick by remember { mutableIntStateOf(-1) } // -1 none, 0 left, 1 right
+    var seekFlashText by remember { mutableStateOf<String?>(null) }
+    var seekFlashTick by remember { mutableIntStateOf(-1) }
+
+    // Cumulative double-tap seek: taps within the window stack on top of the
+    // first double-tap instead of restarting from the current position.
+    var seekStreak by remember { mutableIntStateOf(0) }
+    var seekStreakDir by remember { mutableIntStateOf(0) }
+    var streakBaseMs by remember { mutableLongStateOf(0L) }
+    var lastStreakAt by remember { mutableLongStateOf(0L) }
+
+    // Horizontal drag scrubbing preview.
+    var surfaceWidthPx by remember { mutableIntStateOf(1) }
+    var timelineDragging by remember { mutableStateOf(false) }
+    var timelineBaseMs by remember { mutableLongStateOf(0L) }
+    var timelineDeltaMs by remember { mutableLongStateOf(0L) }
+
+    // Persisted subtitle appearance (PRD-style caption settings).
+    var subSizeSp by remember { mutableIntStateOf(22) }
+    var subTextColor by remember { mutableIntStateOf(0xFFFFFFFF.toInt()) }
+    var subBgColor by remember { mutableIntStateOf(0x00000000) }
+    var subEdge by remember { mutableStateOf(SubtitleEdge.OUTLINE) }
 
     var legacyTemp by remember { mutableStateOf<File?>(null) }
     var legacyReady by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        runCatching { settingsRepo.subtitleStyle() }.getOrNull()?.let { style ->
+            subSizeSp = style.sizeSp
+            subTextColor = style.textColor
+            subBgColor = style.bgColor
+            subEdge = style.edge
+        }
+    }
+    fun persistSubtitleStyle(style: SubtitleStyle) {
+        scope.launch { runCatching { settingsRepo.setSubtitleStyle(style) } }
+    }
 
     // ---------- load metadata / decrypt legacy ----------
     val entity by produceState<VaultFile?>(null, fileId) {
@@ -288,6 +325,10 @@ fun VideoPlayerScreen(
             /* handleAudioFocus = */ true,
         )
         onDispose {}
+    }
+
+    LaunchedEffect(player, isMuted) {
+        player.volume = if (isMuted) 0f else 1f
     }
 
     fun buildAndPrepare(startAtMs: Long) {
@@ -431,152 +472,55 @@ fun VideoPlayerScreen(
 
     // ---------- actions ----------
 
-    // Realtime export progress (single item, works for both v2 streaming and legacy temp).
-    var transferState by remember { mutableStateOf<TransferProgress?>(null) }
-    val transferCancel = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
-
-    fun startTrackedExport(toast: String, block: suspend () -> Unit) {
-        if (transferState != null) return
-        transferCancel.set(false)
+    fun toggleMute() {
+        isMuted = !isMuted
+        val msg = if (isMuted) "🔇 Suara mati" else "🔊 Suara nyala"
+        hudText = msg
         scope.launch {
-            try {
-                block()
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(activity, toast, Toast.LENGTH_SHORT).show()
-                }
-            } catch (e: TransferCancelledException) {
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(activity, "Dibatalkan", Toast.LENGTH_SHORT).show()
-                }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(
-                        activity,
-                        "Export gagal (${e.javaClass.simpleName}): ${e.message}",
-                        Toast.LENGTH_LONG,
-                    ).show()
-                }
-            } finally {
-                transferState = null
-            }
+            delay(900)
+            if (hudText == msg) hudText = null
         }
     }
 
-    /** Manual counted copy for the legacy plaintext temp file, with the same progress shape. */
-    suspend fun copyTempWithProgress(source: File, destUri: Uri) {
-        withContext(Dispatchers.IO) {
-            val total = source.length()
-            val name = entity?.name ?: source.name
-            activity.contentResolver.openOutputStream(destUri)?.buffered()?.use { out ->
-                source.inputStream().buffered().use { input ->
-                    val buf = ByteArray(64 * 1024)
-                    var done = 0L
-                    while (true) {
-                        if (transferCancel.get()) {
-                            throw TransferCancelledException(0, "Export dibatalkan")
-                        }
-                        val r = input.read(buf)
-                        if (r == -1) break
-                        out.write(buf, 0, r)
-                        done += r
-                        transferState = TransferProgress.single(
-                            TransferKind.EXPORT,
-                            name,
-                            done,
-                            if (total > 0) total else done + 1,
-                        )
-                    }
-                    transferState =
-                        TransferProgress.single(TransferKind.EXPORT, name, total, total.coerceAtLeast(1))
-                }
-            } ?: throw IOException("Tidak dapat membuka tujuan export")
-        }
-    }
-
-    val exportLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("application/octet-stream")
-    ) { uri ->
-        if (uri != null) {
-            startTrackedExport("File diekspor") {
-                val tmp = legacyTemp
-                if (tmp != null) {
-                    copyTempWithProgress(tmp, uri)
-                } else {
-                    repo.exportFile(
-                        fileId, uri,
-                        onItemProgress = { done, total ->
-                            transferState = TransferProgress.single(
-                                TransferKind.EXPORT,
-                                entity?.name ?: fileName,
-                                done,
-                                total,
-                            )
-                        },
-                        isCancelled = { transferCancel.get() },
-                    )
-                }
-            }
+    fun onDirectionalSeekTap(dir: Int) {
+        val now = SystemClock.elapsedRealtime()
+        if (seekStreak > 0 && dir == seekStreakDir && now - lastStreakAt <= STREAK_WINDOW_MS) {
+            seekStreak += 1
         } else {
-            // SAF file picker returned null (cancelled or broken) - fallback to Downloads
-            val e = entity ?: return@rememberLauncherForActivityResult
-            val safeName = e.name.ifBlank { "video.mp4" }
-            startTrackedExport("File disimpan ke folder Downloads") {
-                repo.exportToDownloads(
-                    fileId, safeName,
-                    onItemProgress = { done, total ->
-                        transferState = TransferProgress.single(TransferKind.EXPORT, safeName, done, total)
-                    },
-                    isCancelled = { transferCancel.get() },
-                )
-            }
+            seekStreak = 1
+            seekStreakDir = dir
+            streakBaseMs = player.currentPosition.coerceAtLeast(0L)
         }
+        lastStreakAt = now
+        val target = (streakBaseMs + 10_000L * dir * seekStreak)
+            .coerceIn(0L, durationMs.coerceAtLeast(0L))
+        player.seekTo(target)
+        positionMs = target
+        seekFlashText = if (dir < 0) "« ${seekStreak * 10}s" else "${seekStreak * 10}s »"
+        seekFlashTick += 1
     }
 
-    fun exportToDownloads() {
-        val e = entity ?: return
-        startTrackedExport("Tersimpan di folder Download") {
-            repo.exportToDownloads(
-                e.id, e.name,
-                onItemProgress = { done, total ->
-                    transferState = TransferProgress.single(TransferKind.EXPORT, e.name, done, total)
-                },
-                isCancelled = { transferCancel.get() },
-            )
-        }
+    fun onTapSurface() {
+        // A stray tap right after a seek streak must not flip the controls.
+        if (seekStreak > 0 && SystemClock.elapsedRealtime() - lastStreakAt <= STREAK_WINDOW_MS) return
+        controlsVisible = !controlsVisible
     }
 
-    fun shareVideo() {
-        scope.launch(Dispatchers.IO) {
-            try {
-                val outFile = if (legacyTemp != null) {
-                    id.bayu.mygalleryvault.ui.components.DecryptedShare.writeForSharing(activity, fileName) { out ->
-                        legacyTemp!!.inputStream().use { it.copyTo(out) }
-                    }
-                } else {
-                    // Stream decryption directly to share file instead of loading all into memory
-                    val e = entity ?: throw IllegalStateException("File tidak ditemukan")
-                    val storage = app.container.currentStack().storage
-                    val key = VaultSession.masterKey ?: throw IllegalStateException("Vault terkunci")
-                    id.bayu.mygalleryvault.ui.components.DecryptedShare.writeForSharing(activity, fileName) { out ->
-                        storage.openDecrypted(e.encryptedName, key, out)
-                    }
-                }
-                withContext(Dispatchers.Main) {
-                    activity.startActivity(
-                        id.bayu.mygalleryvault.ui.components.DecryptedShare.shareIntent(activity, outFile, "video/*")
-                    )
-                }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(activity, "Gagal membagikan: ${e.message}", Toast.LENGTH_SHORT).show()
-                }
-            }
-        }
-    }
-
-    fun seekBy(deltaMs: Long) {
-        player.seekTo((player.currentPosition + deltaMs).coerceIn(0L, durationMs.coerceAtLeast(0L)))
-    }
+    // Caption style object rebuilt in composition so style edits re-run the
+    // PlayerView update below without touching the player instance.
+    // Constructor order: foreground, background, window, edge type, edge color, typeface.
+    val captionStyle = CaptionStyleCompat(
+        subTextColor,
+        subBgColor,
+        0,
+        when (subEdge) {
+            SubtitleEdge.NONE -> CaptionStyleCompat.EDGE_TYPE_NONE
+            SubtitleEdge.OUTLINE -> CaptionStyleCompat.EDGE_TYPE_OUTLINE
+            SubtitleEdge.DROP_SHADOW -> CaptionStyleCompat.EDGE_TYPE_DROP_SHADOW
+        },
+        if (subEdge == SubtitleEdge.NONE) 0 else android.graphics.Color.BLACK,
+        null,
+    )
 
     // ---------- UI ----------
     Box(Modifier.fillMaxSize().background(Color.Black)) {
@@ -596,6 +540,10 @@ fun VideoPlayerScreen(
                 update = { view ->
                     view.player = player
                     view.setShowSubtitleButton(false)
+                    view.subtitleView?.apply {
+                        setStyle(captionStyle)
+                        setFixedTextSize(TypedValue.COMPLEX_UNIT_SP, subSizeSp.toFloat())
+                    }
                 },
                 modifier = Modifier.fillMaxSize(),
             )
@@ -603,105 +551,153 @@ fun VideoPlayerScreen(
 
         // ---- gesture strips (left=brightness, right=volume) + center gestures ----
         if (ready && errorText == null) {
-            Row(Modifier.fillMaxSize()) {
-                SideStrip(
-                    modifier = Modifier.weight(1f),
-                    onTapToggle = { controlsVisible = !controlsVisible },
-                    onDoubleTap = {
-                        seekBy(-10_000)
-                        seekFlashTick = 0
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .onSizeChanged { surfaceWidthPx = it.width.coerceAtLeast(1) }
+                    .pointerInput(durationMs) {
+                        detectHorizontalDragGestures(
+                            onDragStart = { _ ->
+                                if (durationMs > 0L) {
+                                    timelineDragging = true
+                                    scrubbing = true
+                                    timelineBaseMs = player.currentPosition.coerceAtLeast(0L)
+                                    timelineDeltaMs = 0L
+                                }
+                            },
+                            onHorizontalDrag = { change, amount ->
+                                change.consume()
+                                if (timelineDragging) {
+                                    timelineDeltaMs += (amount * durationMs / surfaceWidthPx).toLong()
+                                    positionMs = (timelineBaseMs + timelineDeltaMs)
+                                        .coerceIn(0L, durationMs)
+                                }
+                            },
+                            onDragEnd = {
+                                if (timelineDragging) {
+                                    val target = (timelineBaseMs + timelineDeltaMs)
+                                        .coerceIn(0L, durationMs)
+                                    player.seekTo(target)
+                                    positionMs = target
+                                    timelineDragging = false
+                                    scrubbing = false
+                                }
+                            },
+                            onDragCancel = {
+                                timelineDragging = false
+                                scrubbing = false
+                            },
+                        )
                     },
-                    onVerticalDrag = { dy ->
-                        val attrs = activity.window.attributes
-                        val cur = if (attrs.screenBrightness < 0f) 0.5f else attrs.screenBrightness
-                        val next = (cur - dy / 2000f).coerceIn(0.01f, 1f)
-                        attrs.screenBrightness = next
-                        activity.window.attributes = attrs
-                        hudText = "☀ ${(next * 100).toInt()}%"
-                    },
-                    onDragEnd = { hudText = null },
-                )
-                Box(
-                    Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .pointerInput(Unit) {
-                            detectTapGestures(
-                                onTap = { controlsVisible = !controlsVisible },
-                                onDoubleTap = {
-                                    seekBy(+10_000)
-                                    seekFlashTick = 1
-                                },
-                                onLongPress = { boosting = true },
-                                onPress = {
-                                    val released = tryAwaitRelease()
-                                    if (released && boosting) boosting = false
-                                },
-                            )
+            ) {
+                Row(Modifier.fillMaxSize()) {
+                    SideStrip(
+                        modifier = Modifier.weight(1f),
+                        onTapToggle = ::onTapSurface,
+                        onDoubleTap = { onDirectionalSeekTap(-1) },
+                        onVerticalDrag = { dy ->
+                            val attrs = activity.window.attributes
+                            val cur = if (attrs.screenBrightness < 0f) 0.5f else attrs.screenBrightness
+                            val next = (cur - dy / 2000f).coerceIn(0.01f, 1f)
+                            attrs.screenBrightness = next
+                            activity.window.attributes = attrs
+                            hudText = "☀ ${(next * 100).toInt()}%"
                         },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    androidx.compose.animation.AnimatedVisibility(
-                        visible = controlsVisible,
-                        enter = fadeIn(),
-                        exit = fadeOut(),
+                        onDragEnd = { hudText = null },
+                    )
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .pointerInput(Unit) {
+                                detectTapGestures(
+                                    onTap = { onTapSurface() },
+                                    onDoubleTap = { onDirectionalSeekTap(+1) },
+                                    onLongPress = { boosting = true },
+                                    onPress = {
+                                        val released = tryAwaitRelease()
+                                        if (released && boosting) boosting = false
+                                    },
+                                )
+                            },
+                        contentAlignment = Alignment.Center,
                     ) {
-                        IconButton(onClick = {
-                            if (player.isPlaying) player.pause() else player.play()
-                        }) {
-                            Icon(
-                                if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                                contentDescription = "Play/Pause",
-                                tint = Color.White.copy(alpha = 0.9f),
-                                modifier = Modifier.size(72.dp),
+                        androidx.compose.animation.AnimatedVisibility(
+                            visible = controlsVisible,
+                            enter = fadeIn(),
+                            exit = fadeOut(),
+                        ) {
+                            IconButton(onClick = {
+                                if (player.isPlaying) player.pause() else player.play()
+                            }) {
+                                Icon(
+                                    if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                                    contentDescription = "Play/Pause",
+                                    tint = Color.White.copy(alpha = 0.9f),
+                                    modifier = Modifier.size(72.dp),
+                                )
+                            }
+                        }
+                        if (boosting) {
+                            Text(
+                                "▶▶ 2×",
+                                color = Color.White,
+                                style = MaterialTheme.typography.labelLarge,
+                                modifier = Modifier
+                                    .align(Alignment.TopCenter)
+                                    .padding(top = 70.dp)
+                                    .background(Color.Black.copy(alpha = 0.55f))
+                                    .padding(horizontal = 14.dp, vertical = 6.dp),
                             )
                         }
                     }
-                    if (boosting) {
-                        Text(
-                            "▶▶ 2×",
-                            color = Color.White,
-                            style = MaterialTheme.typography.labelLarge,
-                            modifier = Modifier
-                                .align(Alignment.TopCenter)
-                                .padding(top = 70.dp)
-                                .background(Color.Black.copy(alpha = 0.55f))
-                                .padding(horizontal = 14.dp, vertical = 6.dp),
-                        )
-                    }
+                    HoldToBoostStrip(
+                        modifier = Modifier.weight(1f),
+                        onVerticalDrag = { dy ->
+                            val cur = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+                            val step = (-dy / 24f).toInt()
+                            val next = (cur + step).coerceIn(0, volumeMax)
+                            if (next != cur) audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, next, 0)
+                            hudText = "🔊 ${(next * 100 / volumeMax.coerceAtLeast(1))}%"
+                        },
+                        onDragEnd = { hudText = null },
+                        onSeekTap = { onDirectionalSeekTap(+1) },
+                        onSingleTap = ::onTapSurface,
+                        onBoostChange = { boosting = it },
+                    )
                 }
-                SideStrip(
-                    modifier = Modifier.weight(1f),
-                    onTapToggle = { controlsVisible = !controlsVisible },
-                    onDoubleTap = {
-                        seekBy(+10_000)
-                        seekFlashTick = 1
-                    },
-                    onVerticalDrag = { dy ->
-                        val cur = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
-                        val step = (-dy / 24f).toInt()
-                        val next = (cur + step).coerceIn(0, volumeMax)
-                        if (next != cur) audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, next, 0)
-                        hudText = "🔊 ${(next * 100 / volumeMax.coerceAtLeast(1))}%"
-                    },
-                    onDragEnd = { hudText = null },
-                )
+
+                if (timelineDragging) {
+                    val target = (timelineBaseMs + timelineDeltaMs)
+                        .coerceIn(0L, durationMs.coerceAtLeast(0L))
+                    val delta = target - timelineBaseMs
+                    Text(
+                        (if (delta >= 0) "+" else "") + "${delta / 1000}s • ${formatTime(target)}",
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 90.dp)
+                            .background(Color.Black.copy(alpha = 0.65f))
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                    )
+                }
             }
 
-            // double-tap flash
+            // cumulative streak flash
             LaunchedEffect(seekFlashTick) {
                 if (seekFlashTick >= 0) {
-                    delay(450)
-                    seekFlashTick = -1
+                    delay(700)
+                    seekFlashText = null
                 }
             }
-            if (seekFlashTick >= 0) {
+            seekFlashText?.let { txt ->
                 Text(
-                    if (seekFlashTick == 0) "« 10s" else "10s »",
+                    txt,
                     color = Color.White,
                     style = MaterialTheme.typography.headlineSmall,
                     modifier = Modifier
-                        .align(if (seekFlashTick == 0) Alignment.CenterStart else Alignment.CenterEnd)
+                        .align(if (seekStreakDir < 0) Alignment.CenterStart else Alignment.CenterEnd)
                         .padding(horizontal = 28.dp),
                 )
             }
@@ -755,9 +751,6 @@ fun VideoPlayerScreen(
                         maxLines = 1,
                         modifier = Modifier.weight(1f),
                     )
-                    IconButton(onClick = { showSubtitleSheet = true }) {
-                        Icon(Icons.Rounded.Subtitles, "Subtitle", tint = Color.White)
-                    }
                     IconButton(onClick = { showSpeedSheet = true }) {
                         Icon(Icons.Rounded.Speed, "Kecepatan", tint = Color.White)
                     }
@@ -793,24 +786,18 @@ fun VideoPlayerScreen(
                         Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.End,
                     ) {
-                        IconButton(onClick = { showDeleteConfirm = true }) {
-                            Icon(Icons.Rounded.Delete, "Hapus", tint = Color.White)
+                        IconButton(onClick = ::toggleMute) {
+                            Icon(
+                                if (isMuted) Icons.Rounded.VolumeOff else Icons.Rounded.VolumeUp,
+                                "Bisukan",
+                                tint = Color.White,
+                            )
                         }
-                        IconButton(onClick = ::exportToDownloads) {
-                            Icon(Icons.Rounded.SaveAlt, "Simpan ke Download", tint = Color.White)
+                        IconButton(onClick = { showSubtitleSheet = true }) {
+                            Icon(Icons.Rounded.Subtitles, "Subtitle", tint = Color.White)
                         }
-                        IconButton(onClick = {
-                            id.bayu.mygalleryvault.core.lock.AutoLockManager.launchWithoutAutoLock {
-                                exportLauncher.launch(
-                                    id.bayu.mygalleryvault.data.repository.VaultRepository
-                                        .safeExportName(fileName.ifBlank { "video.mp4" })
-                                )
-                            }
-                        }) {
-                            Icon(Icons.Rounded.FileDownload, "Export pilih lokasi", tint = Color.White)
-                        }
-                        IconButton(onClick = { shareVideo() }) {
-                            Icon(Icons.Rounded.Share, "Bagikan", tint = Color.White)
+                        IconButton(onClick = { showSubtitleStyleSheet = true }) {
+                            Icon(Icons.Rounded.FormatSize, "Tampilan subtitle", tint = Color.White)
                         }
                     }
                 }
@@ -919,31 +906,17 @@ fun VideoPlayerScreen(
         )
     }
 
-    // Realtime export progress overlay.
-    transferState?.let { tp ->
-        TransferProgressDialog(progress = tp, onCancel = { transferCancel.set(true) })
-    }
-
-    if (showDeleteConfirm) {
-        AlertDialog(
-            onDismissRequest = { showDeleteConfirm = false },
-            title = { Text("Hapus video?") },
-            text = { Text("File ini akan dihapus permanen dari vault.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    showDeleteConfirm = false
-                    scope.launch {
-                        try {
-                            repo.deleteFiles(listOf(fileId))
-                            onDeleted()
-                        } catch (e: Exception) {
-                            Toast.makeText(activity, "Gagal menghapus: ${e.message}", Toast.LENGTH_SHORT)
-                                .show()
-                        }
-                    }
-                }) { Text("Hapus") }
+    if (showSubtitleStyleSheet) {
+        SubtitleStyleSheet(
+            style = SubtitleStyle(subSizeSp, subTextColor, subBgColor, subEdge),
+            onStyleChange = { style ->
+                subSizeSp = style.sizeSp
+                subTextColor = style.textColor
+                subBgColor = style.bgColor
+                subEdge = style.edge
+                persistSubtitleStyle(style)
             },
-            dismissButton = { TextButton(onClick = { showDeleteConfirm = false }) { Text("Batal") } },
+            onDismiss = { showSubtitleStyleSheet = false },
         )
     }
 }
@@ -978,6 +951,81 @@ private fun SideStrip(
     )
 }
 
+/**
+ * Right-side gesture strip: tap toggles controls (after the double-tap
+ * window), double tap seeks +10s cumulatively, and holding the SECOND tap of
+ * a double (double-tap-hold) runs 2x speed until release. A held first tap
+ * does nothing, and a vertical volume drag cancels the hold.
+ */
+@Composable
+private fun HoldToBoostStrip(
+    modifier: Modifier,
+    onVerticalDrag: (Float) -> Unit,
+    onDragEnd: () -> Unit,
+    onSeekTap: () -> Unit,
+    onSingleTap: () -> Unit,
+    onBoostChange: (Boolean) -> Unit,
+) {
+    var lastTapAt by remember { mutableLongStateOf(0L) }
+    var toggleJob by remember { mutableStateOf<Job?>(null) }
+    val scope = rememberCoroutineScope()
+    Box(
+        modifier
+            .fillMaxHeight()
+            .pointerInput(Unit) {
+                detectVerticalDragGestures(
+                    onVerticalDrag = { change, amount ->
+                        change.consume()
+                        onVerticalDrag(amount)
+                    },
+                    onDragEnd = { onDragEnd() },
+                    onDragCancel = { onDragEnd() },
+                )
+            }
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    awaitFirstDown()
+                    val downTime = SystemClock.elapsedRealtime()
+                    val pendingDouble = lastTapAt > 0 &&
+                        downTime - lastTapAt <= viewConfiguration.doubleTapTimeoutMillis
+                    val up = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+                        waitForUpOrCancellation()
+                    }
+                    if (up == null) {
+                        val stolenByDrag = currentEvent.changes.any { it.isConsumed }
+                        if (!stolenByDrag && pendingDouble) {
+                            // Held second tap: land its seek, then run 2x
+                            // until every pointer is released.
+                            onSeekTap()
+                            onBoostChange(true)
+                            var allUp = currentEvent.changes.none { it.pressed }
+                            while (!allUp) {
+                                allUp = awaitPointerEvent().changes.none { it.pressed }
+                            }
+                            onBoostChange(false)
+                        }
+                        lastTapAt = 0L
+                    } else {
+                        lastTapAt = SystemClock.elapsedRealtime()
+                        if (pendingDouble) {
+                            onSeekTap()
+                        } else {
+                            toggleJob?.cancel()
+                            toggleJob = scope.launch {
+                                delay(viewConfiguration.doubleTapTimeoutMillis.toLong())
+                                if (SystemClock.elapsedRealtime() - lastTapAt >=
+                                    viewConfiguration.doubleTapTimeoutMillis
+                                ) {
+                                    onSingleTap()
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+    )
+}
+
 private fun applySubtitleSelection(player: ExoPlayer, selectedId: String?) {
     val builder = player.trackSelectionParameters.buildUpon()
     if (selectedId == null) {
@@ -997,6 +1045,8 @@ private fun applySubtitleSelection(player: ExoPlayer, selectedId: String?) {
     }
     player.trackSelectionParameters = builder.build()
 }
+
+private const val STREAK_WINDOW_MS = 1200L
 
 private fun formatTime(ms: Long): String {
     val totalSec = ms / 1000

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "needmcp": {
+      "type": "remote",
+      "url": "https://needmcp.com/mcp",
+      "enabled": true,
+      "headers": {
+        "X-API-Key": "sk-need-jlFnZ1BsIaUrKFYuVFoW"
+      }
+    }
+  }
+}

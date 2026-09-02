@@ -170,7 +170,6 @@ fun AppRoot(activity: androidx.fragment.app.FragmentActivity) {
                         activity = activity,
                         fileId = fileId,
                         onBack = { navController.popBackStack() },
-                        onDeleted = { navController.popBackStack() },
                     )
                 }
                 composable(Routes.SETTINGS) {

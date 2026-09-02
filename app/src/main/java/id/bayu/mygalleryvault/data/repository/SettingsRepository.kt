@@ -8,6 +8,8 @@ import id.bayu.mygalleryvault.domain.model.AutoLockOption
 import id.bayu.mygalleryvault.domain.model.SearchEngine
 import id.bayu.mygalleryvault.domain.model.SettingsKeys
 import id.bayu.mygalleryvault.domain.model.ShakeSensitivity
+import id.bayu.mygalleryvault.domain.model.SubtitleEdge
+import id.bayu.mygalleryvault.domain.model.SubtitleStyle
 import id.bayu.mygalleryvault.domain.model.ViewMode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -135,6 +137,31 @@ class SettingsRepository(private val settingsDao: SettingsDao) {
 
     suspend fun setHomeViewMode(mode: ViewMode) {
         settingsDao.put(SettingEntity(SettingsKeys.HOME_VIEW_MODE, mode.name))
+    }
+
+    suspend fun subtitleStyle(): SubtitleStyle = SubtitleStyle(
+        sizeSp = getRaw(SettingsKeys.SUBTITLE_SIZE_SP)?.toIntOrNull() ?: 22,
+        textColor = getRaw(SettingsKeys.SUBTITLE_TEXT_COLOR)?.toLongOrNull()?.toInt()
+            ?: 0xFFFFFFFF.toInt(),
+        bgColor = getRaw(SettingsKeys.SUBTITLE_BG_COLOR)?.toLongOrNull()?.toInt() ?: 0,
+        edge = SubtitleEdge.fromName(getRaw(SettingsKeys.SUBTITLE_EDGE)),
+    )
+
+    suspend fun setSubtitleStyle(style: SubtitleStyle) {
+        settingsDao.put(SettingEntity(SettingsKeys.SUBTITLE_SIZE_SP, style.sizeSp.toString()))
+        settingsDao.put(
+            SettingEntity(
+                SettingsKeys.SUBTITLE_TEXT_COLOR,
+                (style.textColor.toLong() and 0xFFFFFFFFL).toString(),
+            )
+        )
+        settingsDao.put(
+            SettingEntity(
+                SettingsKeys.SUBTITLE_BG_COLOR,
+                (style.bgColor.toLong() and 0xFFFFFFFFL).toString(),
+            )
+        )
+        settingsDao.put(SettingEntity(SettingsKeys.SUBTITLE_EDGE, style.edge.name))
     }
 
     private fun parseAutoLock(value: String?): AutoLockOption =
