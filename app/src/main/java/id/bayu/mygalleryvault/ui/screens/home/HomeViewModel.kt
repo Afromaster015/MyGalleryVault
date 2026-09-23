@@ -5,6 +5,8 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import id.bayu.mygalleryvault.data.repository.ThumbnailService
+import id.bayu.mygalleryvault.data.repository.TransferRepository
 import id.bayu.mygalleryvault.data.repository.VaultRepository
 import id.bayu.mygalleryvault.domain.model.ImportOutcome
 import id.bayu.mygalleryvault.domain.model.SortOption
@@ -24,6 +26,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 class HomeViewModel(
     private val repo: VaultRepository,
+    private val transfers: TransferRepository,
+    private val thumbnails: ThumbnailService,
     val folderId: Long?,
 ) : ViewModel() {
 
@@ -94,7 +98,7 @@ class HomeViewModel(
         viewModelScope.launch {
             _importing.value = true
             try {
-                val outcome = repo.importUris(
+                val outcome = transfers.importUris(
                     uris, folderId, moveOriginals,
                     onProgress = { p -> _transferProgress.value = p },
                     isCancelled = { transferCancelled.get() },
@@ -127,7 +131,7 @@ class HomeViewModel(
         viewModelScope.launch {
             try {
                 val name = repo.getFile(fileId)?.name ?: "file"
-                repo.exportFile(
+                transfers.exportFile(
                     fileId, destUri,
                     onItemProgress = { done, total ->
                         _transferProgress.value = TransferProgress.single(TransferKind.EXPORT, name, done, total)
@@ -149,7 +153,7 @@ class HomeViewModel(
         if (!beginTransfer()) return
         viewModelScope.launch {
             try {
-                repo.exportToDownloads(
+                transfers.exportToDownloads(
                     fileId, displayName,
                     onItemProgress = { done, total ->
                         _transferProgress.value =
@@ -194,7 +198,7 @@ class HomeViewModel(
                     )
                     _transferProgress.value = publish.copy(itemBytesDone = 0, itemBytesTotal = 0)
                     try {
-                        val exported = repo.exportIntoDir(
+                        val exported = transfers.exportIntoDir(
                             id, treeUri,
                             onItemProgress = { done, size ->
                                 _transferProgress.value = publish.copy(
@@ -311,16 +315,16 @@ class HomeViewModel(
             synchronized(thumbCache) { thumbCache[fileId] }?.let { return it }
             return try {
                 withContext(Dispatchers.IO) {
-                    var bmp = repo.getThumbnailBitmap(fileId)
+                    var bmp = thumbnails.getThumbnailBitmap(fileId)
                     if (bmp == null) {
                         thumbLog("generate start id=$fileId video=$isVideo image=$isImage")
                         val generated = when {
-                            isVideo -> repo.generateVideoThumbnail(fileId)
-                            isImage -> repo.generateImageThumbnail(fileId)
+                            isVideo -> thumbnails.generateVideoThumbnail(fileId)
+                            isImage -> thumbnails.generateImageThumbnail(fileId)
                             else -> false
                         }
                         thumbLog("generate id=$fileId result=$generated")
-                        if (generated) bmp = repo.getThumbnailBitmap(fileId)
+                        if (generated) bmp = thumbnails.getThumbnailBitmap(fileId)
                     } else {
                         thumbLog("load stored id=$fileId")
                     }

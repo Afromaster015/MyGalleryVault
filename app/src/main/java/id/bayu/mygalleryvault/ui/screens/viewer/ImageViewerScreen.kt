@@ -58,7 +58,9 @@ fun ImageViewerScreen(
     onDeleted: () -> Unit,
 ) {
     val app = activity.application as SecureVaultApp
-    val repo = app.container.currentStack().repository
+    val stack = app.container.currentStack()
+    val repo = stack.repository
+    val transfers = stack.transfers
     val scope = rememberCoroutineScope()
 
     val bitmap by produceState<Bitmap?>(initialValue = null, key1 = fileId) {
@@ -113,7 +115,7 @@ fun ImageViewerScreen(
         val name = fileName ?: "export.jpg"
         if (uri != null && fileId > 0) {
             startTrackedExport("File diekspor") {
-                repo.exportFile(
+                transfers.exportFile(
                     fileId, uri,
                     onItemProgress = { done, total ->
                         transferState =
@@ -124,7 +126,7 @@ fun ImageViewerScreen(
             }
         } else if (fileId > 0) {
             startTrackedExport("File disimpan ke folder Downloads") {
-                repo.exportToDownloads(
+                transfers.exportToDownloads(
                     fileId, name,
                     onItemProgress = { done, total ->
                         transferState =
@@ -140,7 +142,7 @@ fun ImageViewerScreen(
     fun exportToDownloads() {
         val name = fileName ?: "export.jpg"
         startTrackedExport("Tersimpan di folder Download") {
-            repo.exportToDownloads(
+            transfers.exportToDownloads(
                 fileId, name,
                 onItemProgress = { done, total ->
                     transferState =
@@ -206,7 +208,7 @@ fun ImageViewerScreen(
             IconButton(onClick = {
                 id.bayu.mygalleryvault.core.lock.AutoLockManager.launchWithoutAutoLock {
                     exportLauncher.launch(
-                        id.bayu.mygalleryvault.data.repository.VaultRepository
+                        id.bayu.mygalleryvault.data.repository.TransferRepository
                             .safeExportName(fileName ?: "export.jpg")
                     )
                 }

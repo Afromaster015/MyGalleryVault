@@ -123,7 +123,10 @@ fun HomeScreen(
     val vm: HomeViewModel = viewModel(
         key = "home_${sessionSlot}_${folderId ?: 0}",
         factory = viewModelFactory {
-            initializer { HomeViewModel(app.container.currentStack().repository, folderId) }
+            initializer {
+                val stack = app.container.currentStack()
+                HomeViewModel(stack.repository, stack.transfers, stack.thumbnails, folderId)
+            }
         },
     )
 
@@ -475,7 +478,7 @@ fun HomeScreen(
                         actionSheetFor = null
                         AutoLockManager.launchWithoutAutoLock {
                             exportLauncher.launch(
-                                id.bayu.mygalleryvault.data.repository.VaultRepository
+                                id.bayu.mygalleryvault.data.repository.TransferRepository
                                     .safeExportName(data.file.name)
                             )
                         }
@@ -484,7 +487,7 @@ fun HomeScreen(
                         actionSheetFor = null
                         vm.exportToDownloads(
                             data.file.id,
-                            id.bayu.mygalleryvault.data.repository.VaultRepository.safeExportName(data.file.name)
+                            id.bayu.mygalleryvault.data.repository.TransferRepository.safeExportName(data.file.name)
                         )
                     }) { Text("Simpan ke Download") }
                     TextButton(onClick = {

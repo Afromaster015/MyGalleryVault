@@ -10,6 +10,8 @@ import id.bayu.mygalleryvault.data.local.AppDatabase
 import id.bayu.mygalleryvault.data.repository.AuthRepository
 import id.bayu.mygalleryvault.data.repository.BackupRepository
 import id.bayu.mygalleryvault.data.repository.SettingsRepository
+import id.bayu.mygalleryvault.data.repository.ThumbnailService
+import id.bayu.mygalleryvault.data.repository.TransferRepository
 import id.bayu.mygalleryvault.data.repository.VaultRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -50,6 +52,8 @@ class VaultStack(
     val database: AppDatabase,
     val storage: VaultStorage,
     val repository: VaultRepository,
+    val transfers: TransferRepository,
+    val thumbnails: ThumbnailService,
 )
 
 class AppContainer(app: Application) {
@@ -73,13 +77,25 @@ class AppContainer(app: Application) {
     private val real by lazy {
         val db = AppDatabase.getReal(app)
         val storage = VaultStorage(app, SLOT_DIR_REAL)
-        VaultStack(db, storage, VaultRepository(app, db, storage))
+        buildStack(db, storage)
     }
 
     private val decoy by lazy {
         val db = AppDatabase.getDecoy(app)
         val storage = VaultStorage(app, SLOT_DIR_DECOY)
-        VaultStack(db, storage, VaultRepository(app, db, storage))
+        buildStack(db, storage)
+    }
+
+    private fun buildStack(db: AppDatabase, storage: VaultStorage): VaultStack {
+        val fileDao = db.vaultFileDao()
+        val thumbnails = ThumbnailService(context, fileDao, storage)
+        return VaultStack(
+            database = db,
+            storage = storage,
+            repository = VaultRepository(context, fileDao, db.folderDao(), storage),
+            transfers = TransferRepository(context, fileDao, storage, thumbnails),
+            thumbnails = thumbnails,
+        )
     }
 
     fun realStack(): VaultStack = real

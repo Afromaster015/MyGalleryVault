@@ -236,7 +236,7 @@ fun VideoPlayerScreen(
         if (isV2) {
             // Any failure here (locked mid-race, retriever quirks) must never
             // kill the process - ExoPlayer timeline provides duration anyway.
-            durationMs = runCatching { repo.probeVideoDurationMs(e.id) }.getOrNull() ?: 0L
+            durationMs = runCatching { app.container.currentStack().thumbnails.probeVideoDurationMs(e.id) }.getOrNull() ?: 0L
             probeDone = true
         } else {
             probeDone = true

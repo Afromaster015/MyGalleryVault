@@ -304,7 +304,7 @@ fun PrivateBrowserScreen(
         wv.setDownloadListener { url, _, _, _, _ ->
             Toast.makeText(activity, "Mengunduh ke vault...", Toast.LENGTH_SHORT).show()
             kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
-                val outcome = app.container.currentStack().repository.importUrl(url, null)
+                val outcome = app.container.currentStack().transfers.importUrl(url, null)
                 val msg = if (outcome.succeeded > 0) "Tersimpan di vault"
                 else "Unduhan gagal: ${outcome.failed.firstOrNull() ?: "unknown"}"
                 Toast.makeText(activity, msg, Toast.LENGTH_LONG).show()

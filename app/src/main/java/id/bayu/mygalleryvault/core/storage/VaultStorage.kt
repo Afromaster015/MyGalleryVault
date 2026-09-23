@@ -17,21 +17,20 @@ private const val FULL_VERIFY_LIMIT = 256L * 1024 * 1024
  * Layout per slot (neutral sub-dir names, PRD §26):
  * files/vault/{slotDir}/objects/ and files/vault/{slotDir}/thumbs/
  */
-class VaultStorage(private val context: Context, slotDir: String? = null) {
+class VaultStorage(val rootDir: File) {
 
-    private val baseDir: File =
-        if (slotDir == null) File(context.filesDir, "vault") else File(context.filesDir, "vault/$slotDir")
+    constructor(context: Context, slotDir: String? = null) : this(
+        if (slotDir == null) File(context.filesDir, "vault")
+        else File(context.filesDir, "vault/$slotDir"),
+    )
 
     private val random = SecureRandom()
 
-    val objectsDir: File get() = File(baseDir, "objects")
-    val thumbsDir: File get() = File(baseDir, "thumbs")
-
-    /** Root of this slot's storage; used when wiping a slot entirely. */
-    val rootDir: File get() = baseDir
+    val objectsDir: File get() = File(rootDir, "objects")
+    val thumbsDir: File get() = File(rootDir, "thumbs")
 
     fun wipeAll() {
-        baseDir.deleteRecursively()
+        rootDir.deleteRecursively()
     }
 
     fun ensureDirs() {
