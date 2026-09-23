@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -126,7 +127,12 @@ fun AppRoot(activity: androidx.fragment.app.FragmentActivity) {
             NavHost(
                 navController = navController,
                 startDestination = if (vaultCreated) Routes.LOCK else Routes.SETUP,
-                modifier = Modifier.padding(padding),
+                // padding alone only shifts the content; consumeWindowInsets tells every
+                // destination the system insets are already spoken for, so a screen's own top bar
+                // stops adding the status-bar height a second time.
+                modifier = Modifier
+                    .padding(padding)
+                    .consumeWindowInsets(padding),
                 // Direction of travel carries the meaning: a tab hop slides sideways the way you
                 // moved, a detail push rises from the bottom. Tabs and pushes never mix.
                 enterTransition = {
