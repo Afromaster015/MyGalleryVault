@@ -23,6 +23,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.fragment.app.FragmentActivity
@@ -287,6 +289,9 @@ private fun PinDots(pinLength: Int, slotCount: Int?) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier.semantics {
+            contentDescription = "$pinLength dari $total digit terisi"
+        },
     ) {
         List(total) { it }.chunked(perRow).forEach { rowIndices ->
             Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {

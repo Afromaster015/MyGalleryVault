@@ -5,54 +5,68 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.BorderStroke
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Sort
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AudioFile
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Circle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CreateNewFolder
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.DriveFileMove
+import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.FileDownload
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.GridView
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.InsertDriveFile
 import androidx.compose.material.icons.rounded.MoreVert
-import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.VideoFile
 import androidx.compose.material.icons.rounded.ViewList
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -61,6 +75,7 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -69,7 +84,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -87,8 +102,19 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.fragment.app.FragmentActivity
@@ -104,12 +130,30 @@ import id.bayu.mygalleryvault.domain.model.VaultEntry
 import id.bayu.mygalleryvault.domain.model.VaultFile
 import id.bayu.mygalleryvault.domain.model.VaultSlot
 import id.bayu.mygalleryvault.ui.components.DecryptedShare
+import id.bayu.mygalleryvault.ui.components.FolderTile
 import id.bayu.mygalleryvault.ui.components.FormatUtil
 import id.bayu.mygalleryvault.ui.components.MoveToFolderDialog
+import id.bayu.mygalleryvault.ui.components.PreviewThumb
+import id.bayu.mygalleryvault.ui.components.SelectionBrackets
 import id.bayu.mygalleryvault.ui.components.ShareWarningDialog
 import id.bayu.mygalleryvault.ui.components.TextInputDialog
 import id.bayu.mygalleryvault.ui.components.TransferProgressDialog
+import id.bayu.mygalleryvault.ui.components.pressScale
+import id.bayu.mygalleryvault.ui.theme.AppMotion
+import id.bayu.mygalleryvault.ui.theme.AppRadius
+import id.bayu.mygalleryvault.ui.theme.settleSpring
 import kotlinx.coroutines.launch
+
+/**
+ * One page margin for the whole Gallery screen. The grid, the detail list, and the search results
+ * all use it, so switching presentation does not shift the header sideways. Before this, the grid
+ * sat at 8dp, the list at 16dp, and the search rows at 20dp, and the difference was visible the
+ * moment the mode changed.
+ */
+private val GalleryPageMargin = 16.dp
+
+/** Vertical gap between blocks on the Gallery screen (header, rows). */
+private val GalleryBlockGap = 8.dp
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -131,6 +175,32 @@ fun HomeScreen(
     )
 
     val entries by vm.entries.collectAsStateWithLifecycle()
+    val entriesLoaded by vm.entriesLoaded.collectAsStateWithLifecycle()
+    val entriesError by vm.entriesError.collectAsStateWithLifecycle()
+
+    var mediaFilter by rememberSaveable { mutableStateOf(MediaFilter.ALL) }
+    val visibleEntries = remember(entries, mediaFilter) { entries.filterBy(mediaFilter) }
+
+    // Real numbers: the vault's encrypted payload plus the device capacity from the filesystem.
+    val storageUsedBytes by produceState(0L, entries) { value = vm.storageUsedBytes() }
+    val storageTotalBytes = remember {
+        runCatching {
+            val stat = android.os.StatFs(activity.filesDir.path)
+            stat.blockCountLong * stat.blockSizeLong
+        }.getOrDefault(0L)
+    }
+
+    val galleryHeader: @Composable () -> Unit = {
+        GalleryHeader(
+            usedBytes = storageUsedBytes,
+            totalBytes = storageTotalBytes,
+            filter = mediaFilter,
+            onFilterChange = { mediaFilter = it },
+            // Inside a folder the app bar already names the location, so only the chips
+            // stay: hiding them would leave an active filter with no visible control.
+            showSummary = folderId == null,
+        )
+    }
     val searchQuery by vm.searchQuery.collectAsStateWithLifecycle()
     val searchResults by vm.searchResults.collectAsStateWithLifecycle()
     val folderName by vm.folderName.collectAsStateWithLifecycle()
@@ -145,9 +215,11 @@ fun HomeScreen(
         settingsRepo.homeViewMode.collect { value = it }
     }
 
-    var searchMode by rememberSaveable { mutableStateOf(false) }
-    var sortMenuOpen by remember { mutableStateOf(false) }
     var overflowOpen by remember { mutableStateOf(false) }
+
+    // The search field holds focus until something takes it back, which leaves the caret blinking
+    // and the outline in its active colour long after the user has moved on.
+    val focusManager = LocalFocusManager.current
 
     // Break-in alerts awaiting owner review (PRD §28), real vault session only.
     var pendingBreakIns by remember { mutableStateOf<List<AuthRepository.BreakInAlertUi>?>(null) }
@@ -257,27 +329,30 @@ fun HomeScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
+            CenterAlignedTopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = Color.Transparent,
+                ),
                 title = {
                     Text(
-                        if (inSelection) "${selectedIds.size} dipilih"
+                        text = if (inSelection) "${selectedIds.size} dipilih"
                         else folderName ?: "MyGalleryVault",
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.titleLarge.copy(
+                            fontWeight = FontWeight.Bold,
+                        ),
                     )
                 },
+                // No brand glyph in the bar: the title is the only thing up here now.
                 navigationIcon = {
-                    when {
-                        inSelection -> IconButton(onClick = { selectedIds.clear() }) {
+                    if (inSelection) {
+                        IconButton(onClick = { selectedIds.clear() }) {
                             Icon(Icons.Rounded.Close, contentDescription = "Keluar seleksi")
                         }
-
-                        folderId != null -> IconButton(onClick = { navController.popBackStack() }) {
+                    } else if (folderId != null) {
+                        IconButton(onClick = { navController.popBackStack() }) {
                             Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Kembali")
-                        }
-
-                        searchMode -> IconButton(onClick = { searchMode = false; vm.setSearchQuery("") }) {
-                            Icon(Icons.Rounded.Close, contentDescription = "Tutup pencarian")
                         }
                     }
                 },
@@ -309,61 +384,54 @@ fun HomeScreen(
                             Icon(Icons.Rounded.Delete, contentDescription = "Hapus terpilih")
                         }
                     } else {
-                        IconButton(onClick = {
-                            val next = if (viewMode == ViewMode.GRID) ViewMode.LIST else ViewMode.GRID
-                            homeScope.launch { settingsRepo.setHomeViewMode(next) }
-                        }) {
-                            Icon(
-                                if (viewMode == ViewMode.GRID) Icons.Rounded.GridView
-                                else Icons.Rounded.ViewList,
-                                contentDescription = if (viewMode == ViewMode.GRID) "Tampilan detail"
-                                else "Tampilan grid",
-                            )
-                        }
-                        IconButton(onClick = {
-                            searchMode = !searchMode
-                            if (!searchMode) vm.setSearchQuery("")
-                        }) {
-                            Icon(Icons.Rounded.Search, contentDescription = "Cari")
-                        }
-                        Box {
-                            IconButton(onClick = { sortMenuOpen = true }) {
-                                Icon(Icons.AutoMirrored.Rounded.Sort, contentDescription = "Urutkan")
-                            }
-                            DropdownMenu(expanded = sortMenuOpen, onDismissRequest = { sortMenuOpen = false }) {
-                                SortOption.entries.forEach { option ->
-                                    DropdownMenuItem(
-                                        text = { Text(option.label + if (option == currentSort) " ✓" else "") },
-                                        onClick = {
-                                            vm.setSort(option)
-                                            sortMenuOpen = false
-                                        },
-                                    )
-                                }
-                            }
-                        }
                         Box {
                             IconButton(onClick = { overflowOpen = true }) {
                                 Icon(Icons.Rounded.MoreVert, contentDescription = "Menu")
                             }
                             DropdownMenu(expanded = overflowOpen, onDismissRequest = { overflowOpen = false }) {
-                            DropdownMenuItem(
-                                text = { Text("Folder baru") },
-                                leadingIcon = { Icon(Icons.Rounded.CreateNewFolder, null) },
-                                onClick = {
-                                    newFolderDialog = true
-                                    overflowOpen = false
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Pengaturan") },
-                                leadingIcon = { Icon(Icons.Rounded.Settings, null) },
-                                onClick = {
-                                    overflowOpen = false
-                                    navController.navigate(Routes.SETTINGS)
-                                },
-                            )
-                        }
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            if (viewMode == ViewMode.GRID) "Tampilan daftar"
+                                            else "Tampilan grid"
+                                        )
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            if (viewMode == ViewMode.GRID) Icons.Rounded.ViewList
+                                            else Icons.Rounded.GridView,
+                                            contentDescription = null,
+                                        )
+                                    },
+                                    onClick = {
+                                        val next =
+                                            if (viewMode == ViewMode.GRID) ViewMode.LIST else ViewMode.GRID
+                                        homeScope.launch { settingsRepo.setHomeViewMode(next) }
+                                        overflowOpen = false
+                                    },
+                                )
+                                HorizontalDivider(Modifier.padding(vertical = 4.dp))
+                                Text(
+                                    "Urutkan",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(start = 12.dp, top = 4.dp, bottom = 4.dp),
+                                )
+                                SortOption.entries.forEach { option ->
+                                    DropdownMenuItem(
+                                        text = { Text(option.label) },
+                                        trailingIcon = {
+                                            if (option == currentSort) {
+                                                Icon(Icons.Rounded.Check, contentDescription = "Aktif")
+                                            }
+                                        },
+                                        onClick = {
+                                            vm.setSort(option)
+                                            overflowOpen = false
+                                        },
+                                    )
+                                }
+                            }
                         }
                     }
                 },
@@ -371,89 +439,222 @@ fun HomeScreen(
         },
         floatingActionButton = {
             if (!inSelection) {
-                FloatingActionButton(
-                    onClick = {
-                        AutoLockManager.launchWithoutAutoLock { importLauncher.launch(arrayOf("*/*")) }
-                    },
-                    shape = CircleShape,
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                // Both "add" actions share one spot and one shape. The accent stays on the
+                // primary action (import): the folder FAB rides a plain surface so the two do
+                // not compete for the eye.
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    if (importing) CircularProgressIndicator(Modifier.height(20.dp))
-                    else Icon(Icons.Rounded.Add, contentDescription = "Impor file")
+                    FloatingActionButton(
+                        onClick = { newFolderDialog = true },
+                        shape = AppRadius.pill,
+                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        contentColor = MaterialTheme.colorScheme.onSurface,
+                    ) {
+                        Icon(Icons.Rounded.CreateNewFolder, contentDescription = "Folder baru")
+                    }
+                    FloatingActionButton(
+                        onClick = {
+                            AutoLockManager.launchWithoutAutoLock {
+                                importLauncher.launch(arrayOf("*/*"))
+                            }
+                        },
+                        shape = AppRadius.pill,
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                    ) {
+                        if (importing) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                color = MaterialTheme.colorScheme.onPrimary,
+                                strokeWidth = 2.dp,
+                                trackColor = Color.Transparent,
+                            )
+                        } else {
+                            Icon(Icons.Rounded.Add, contentDescription = "Impor file")
+                        }
+                    }
                 }
             }
         },
         snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
         Column(Modifier.padding(padding)) {
-            if (searchMode) {
+            // Search sits under the title as a permanent bar, so looking something up is one
+            // tap instead of a mode you enter and leave. It retracts and settles back when
+            // selection takes the row over, instead of blinking out of existence.
+            AnimatedVisibility(
+                visible = !inSelection,
+                enter = fadeIn(tween(AppMotion.DETAIL_MS)) + expandVertically(settleSpring()),
+                exit = fadeOut(tween(AppMotion.DETAIL_MS)) + shrinkVertically(settleSpring()),
+            ) {
                 OutlinedTextField(
                     value = searchQuery,
                     onValueChange = vm::setSearchQuery,
                     placeholder = { Text("Cari nama file...") },
                     singleLine = true,
+                    shape = AppRadius.pill,
+                    trailingIcon = {
+                        if (searchQuery.isNotEmpty()) {
+                            IconButton(onClick = { vm.setSearchQuery("") }) {
+                                Icon(Icons.Rounded.Close, contentDescription = "Bersihkan pencarian")
+                            }
+                        }
+                    },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                        .padding(horizontal = GalleryPageMargin, vertical = GalleryBlockGap),
                 )
-                SearchResultsList(results = searchResults, onItemClick = ::onFileClicked)
-            } else if (entries.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(Icons.Rounded.Folder, null, Modifier.height(48.dp))
-                        Spacer(Modifier.height(8.dp))
-                        Text("Vault kosong", style = MaterialTheme.typography.titleMedium)
-                        Text("Tekan tombol + untuk mengimpor file", style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-            } else if (viewMode == ViewMode.LIST) {
-                EntryDetailsList(
-                    entries = entries,
-                    vm = vm,
-                    selectionMode = inSelection,
-                    isSelected = { selectedIds.contains(it) },
-                    onToggleSelect = ::toggleSelect,
-                    onOpenFolder = { id -> navController.navigate(Routes.folder(id)) },
-                    onOpenFile = ::onFileClicked,
-                )
-            } else {
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(2),
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    items(entries, key = { entry ->
-                        when (entry) {
-                            is VaultEntry.Folder -> "f${entry.folder.id}"
-                            is VaultEntry.File -> "c${entry.file.id}"
+            }
+            // Which body the Gallery shows right now. The crossfade keys off this, so moving
+            // between the grid and the search results fades instead of cutting. Whether a query
+            // found anything is decided one level down, inside SearchArea.
+            val bodyKey = when {
+                searchQuery.isNotBlank() -> "search"
+                !entriesLoaded -> "loading"
+                entriesError != null -> "error"
+                entries.isEmpty() -> "empty"
+                visibleEntries.isEmpty() -> "filtered"
+                viewMode == ViewMode.LIST -> "list"
+                else -> "grid"
+            }
+            Crossfade(
+                targetState = bodyKey,
+                modifier = Modifier
+                    .fillMaxSize()
+                    // A press anywhere on the content hands focus back to the screen, so the bar
+                    // goes idle (no caret, inactive outline) once attention moves elsewhere.
+                    // Watched in the initial pass and never consumed, so tiles and scrolling
+                    // keep behaving exactly as before.
+                    .pointerInput(Unit) {
+                        awaitPointerEventScope {
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                if (event.type == PointerEventType.Press) focusManager.clearFocus()
+                            }
                         }
-                    }) { entry ->
-                        when (entry) {
-                            is VaultEntry.Folder -> FolderTile(
-                                vm = vm,
-                                name = entry.folder.name,
-                                id = entry.folder.id,
-                                isSelected = selectedIds.contains(entry.folder.id),
-                                selectionMode = inSelection,
-                                onClick = { id ->
-                                    if (inSelection) toggleSelect(id)
-                                    else navController.navigate(Routes.folder(id))
-                                },
-                                onLongPress = { fid, _ -> toggleSelect(fid) },
+                    },
+                animationSpec = tween(AppMotion.VIEWER_FADE_MS),
+                label = "galleryBody",
+            ) { body ->
+                when (body) {
+                    "search" -> SearchArea(
+                        results = searchResults,
+                        query = searchQuery,
+                        onItemClick = ::onFileClicked,
+                    )
+
+                    "loading" -> GalleryLoadingGrid()
+
+                    "error" -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(Icons.Rounded.ErrorOutline, null, Modifier.height(48.dp))
+                            Spacer(Modifier.height(8.dp))
+                            Text("Gagal memuat isi vault", style = MaterialTheme.typography.titleMedium)
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                entriesError.orEmpty(),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(horizontal = 32.dp),
                             )
-                            is VaultEntry.File -> FileTile(
-                                file = entry.file,
-                                vm = vm,
-                                isSelected = selectedIds.contains(entry.file.id),
-                                selectionMode = inSelection,
-                                onClick = { f ->
-                                    if (inSelection) toggleSelect(f.id) else onFileClicked(f)
-                                },
-                                onLongPress = { f -> toggleSelect(f.id) },
+                            Spacer(Modifier.height(8.dp))
+                            TextButton(onClick = vm::retry) { Text("Coba lagi") }
+                        }
+                    }
+
+                    "empty" -> Column(
+                        Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = GalleryPageMargin, vertical = GalleryBlockGap),
+                    ) {
+                        galleryHeader()
+                        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                            GalleryMessage(
+                                icon = Icons.Rounded.Folder,
+                                title = "Vault kosong",
+                                detail = "Tekan tombol + untuk mengimpor file",
+                                tint = MaterialTheme.colorScheme.primary,
                             )
+                        }
+                    }
+
+                    "filtered" -> Column(
+                        Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = GalleryPageMargin, vertical = GalleryBlockGap),
+                    ) {
+                        galleryHeader()
+                        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                            GalleryMessage(
+                                icon = Icons.Rounded.Image,
+                                title = "Tidak ada ${mediaFilter.noun}",
+                                detail = "Tampilan ini hanya menampilkan ${mediaFilter.noun}. " +
+                                    "Pilih All untuk melihat semuanya.",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+
+                    "list" -> EntryDetailsList(
+                        entries = visibleEntries,
+                        header = galleryHeader,
+                        vm = vm,
+                        selectionMode = inSelection,
+                        isSelected = { selectedIds.contains(it) },
+                        onToggleSelect = ::toggleSelect,
+                        onOpenFolder = { id -> navController.navigate(Routes.folder(id)) },
+                        onOpenFile = ::onFileClicked,
+                    )
+
+                    else -> LazyVerticalGrid(
+                        columns = GridCells.Fixed(3),
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(
+                            horizontal = GalleryPageMargin,
+                            vertical = GalleryBlockGap,
+                        ),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        item(span = { GridItemSpan(maxLineSpan) }) { galleryHeader() }
+                        items(visibleEntries, key = { entry ->
+                            when (entry) {
+                                is VaultEntry.Folder -> "f${entry.folder.id}"
+                                is VaultEntry.File -> "c${entry.file.id}"
+                            }
+                        }) { entry ->
+                            // Filtering reflows the sheet: tiles that leave fade out and the rest
+                            // glide to their new cell, instead of the grid snapping into a new shape.
+                            Box(Modifier.animateItem()) {
+                                when (entry) {
+                                    is VaultEntry.Folder -> FolderTile(
+                                        vm = vm,
+                                        name = entry.folder.name,
+                                        id = entry.folder.id,
+                                        isSelected = selectedIds.contains(entry.folder.id),
+                                        selectionMode = inSelection,
+                                        onClick = { id ->
+                                            if (inSelection) toggleSelect(id)
+                                            else navController.navigate(Routes.folder(id))
+                                        },
+                                        onLongPress = { fid, _ -> toggleSelect(fid) },
+                                    )
+
+                                    is VaultEntry.File -> FileTile(
+                                        file = entry.file,
+                                        vm = vm,
+                                        isSelected = selectedIds.contains(entry.file.id),
+                                        selectionMode = inSelection,
+                                        onClick = { f ->
+                                            if (inSelection) toggleSelect(f.id) else onFileClicked(f)
+                                        },
+                                        onLongPress = { f -> toggleSelect(f.id) },
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -858,166 +1059,183 @@ private fun shareExternally(vm: HomeViewModel, activity: FragmentActivity, file:
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+/** Scrolls with the grid: section title, real storage summary, and the type filter chips. */
 @Composable
-private fun FolderTile(
-    vm: HomeViewModel,
-    name: String,
-    id: Long,
-    isSelected: Boolean,
-    selectionMode: Boolean,
-    onClick: (Long) -> Unit,
-    onLongPress: (Long, String) -> Unit,
+private fun GalleryHeader(
+    usedBytes: Long,
+    totalBytes: Long,
+    filter: MediaFilter,
+    onFilterChange: (MediaFilter) -> Unit,
+    showSummary: Boolean = true,
 ) {
-    // Same geometry as FileTile so rows align; the cover area shows a 2x2
-    // preview of this folder's contents when it is not empty.
-    val borderColor = if (isSelected) MaterialTheme.colorScheme.primary
-    else MaterialTheme.colorScheme.outlineVariant
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        border = BorderStroke(if (isSelected) 2.dp else 1.dp, borderColor),
-    ) {
-        Box {
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .combinedClickable(
-                        onClick = { onClick(id) },
-                        onLongClick = { onLongPress(id, name) },
-                    ),
+    // The used size arrives from a disk scan, so the bar glides to it instead of snapping.
+    val storageFraction by animateFloatAsState(
+        targetValue = if (totalBytes > 0L) {
+            (usedBytes.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
+        } else 0f,
+        label = "storageUsed",
+    )
+    Column(Modifier.fillMaxWidth()) {
+        if (showSummary) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.large,
+                color = MaterialTheme.colorScheme.surfaceContainer,
             ) {
-                Box(Modifier.fillMaxWidth().height(110.dp)) {
-                    val previews by produceState<List<VaultFile>>(initialValue = emptyList(), key1 = id) {
-                        value = runCatching { vm.folderPreview(id) }.getOrDefault(emptyList())
-                    }
-                    if (previews.isEmpty()) {
-                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Icon(
-                                Icons.Rounded.Folder,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.height(64.dp),
-                            )
-                        }
-                    } else {
-                        Column(
-                            Modifier
-                                .fillMaxSize()
-                                .padding(5.dp),
-                            verticalArrangement = Arrangement.spacedBy(5.dp),
-                        ) {
-                            Row(
-                                Modifier.weight(1f),
-                                horizontalArrangement = Arrangement.spacedBy(5.dp),
-                            ) {
-                                PreviewSlot(previews.getOrNull(0), vm)
-                                PreviewSlot(previews.getOrNull(1), vm)
-                            }
-                            Row(
-                                Modifier.weight(1f),
-                                horizontalArrangement = Arrangement.spacedBy(5.dp),
-                            ) {
-                                PreviewSlot(previews.getOrNull(2), vm)
-                                PreviewSlot(previews.getOrNull(3), vm)
-                            }
-                        }
-                    }
-                }
-                Column(Modifier.padding(10.dp)) {
-                    Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text("Folder", style = MaterialTheme.typography.labelSmall)
+                Column(Modifier.padding(14.dp)) {
+                    Text(
+                        "Storage used ${FormatUtil.fileSize(usedBytes)} of ${FormatUtil.fileSize(totalBytes)}",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    LinearProgressIndicator(
+                        progress = { storageFraction },
+                        modifier = Modifier.fillMaxWidth(),
+                        trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    )
                 }
             }
-            if (selectionMode) {
-                Icon(
-                    if (isSelected) Icons.Rounded.CheckCircle else Icons.Rounded.Circle,
-                    contentDescription = null,
-                    tint = if (isSelected) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.outline.copy(alpha = 0.6f),
+            Spacer(Modifier.height(10.dp))
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            MediaFilter.entries.forEach { option ->
+                val selected = option == filter
+                // The marker is drawn, not switched: it grows out of the label and retracts as
+                // the chip is left, so the underline hands over instead of blinking.
+                val marker by animateFloatAsState(
+                    targetValue = if (selected) 1f else 0f,
+                    animationSpec = settleSpring(),
+                    label = "filterMarker",
+                )
+                Column(
                     modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(8.dp)
-                        .background(MaterialTheme.colorScheme.surface, CircleShape),
+                        .width(IntrinsicSize.Max)
+                        .selectable(
+                            selected = selected,
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            role = Role.Tab,
+                            onClick = { onFilterChange(option) },
+                        ),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        option.label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (selected) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(3.dp))
+                    Box(
+                        Modifier
+                            .fillMaxWidth(marker)
+                            .height(2.dp)
+                            .background(MaterialTheme.colorScheme.primary),
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(2.dp))
+    }
+}
+
+/** Centered icon + cause + next step, shared by the empty and filtered-to-nothing states. */
+@Composable
+private fun GalleryMessage(
+    icon: ImageVector,
+    title: String,
+    detail: String,
+    tint: Color,
+) {
+    Column(
+        modifier = Modifier.padding(horizontal = 32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.height(48.dp))
+        Spacer(Modifier.height(8.dp))
+        Text(title, style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            detail,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
+    }
+}
+
+/**
+ * Static skeleton in the shape of the grid it replaces. Deliberately not animated: the
+ * design dial keeps motion at 1, and a looping shimmer would be motion without a purpose.
+ */
+@Composable
+private fun GalleryLoadingGrid() {
+    val skeleton = MaterialTheme.colorScheme.surfaceContainerHigh
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(3),
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(
+            horizontal = GalleryPageMargin,
+            vertical = GalleryBlockGap,
+        ),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        item(span = { GridItemSpan(maxLineSpan) }) {
+            Column(Modifier.fillMaxWidth()) {
+                Box(
+                    Modifier
+                        .fillMaxWidth(0.45f)
+                        .height(26.dp)
+                        .clip(MaterialTheme.shapes.small)
+                        .background(skeleton),
+                )
+                Spacer(Modifier.height(10.dp))
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(76.dp)
+                        .clip(MaterialTheme.shapes.large)
+                        .background(skeleton),
+                )
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    repeat(3) {
+                        Box(
+                            Modifier
+                                .width(76.dp)
+                                .height(32.dp)
+                                .clip(MaterialTheme.shapes.small)
+                                .background(skeleton),
+                        )
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+            }
+        }
+        repeat(9) {
+            item {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(1f)
+                        .clip(MaterialTheme.shapes.medium)
+                        .background(skeleton),
                 )
             }
         }
     }
 }
 
-/** One cell of a folder's 2x2 cover; empty slots stay visually quiet. */
-@Composable
-private fun RowScope.PreviewSlot(file: VaultFile?, vm: HomeViewModel) {
-    if (file == null) {
-        Box(
-            Modifier
-                .weight(1f)
-                .fillMaxHeight()
-                .clip(MaterialTheme.shapes.small)
-                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                Icons.Rounded.InsertDriveFile,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
-                modifier = Modifier.height(20.dp),
-            )
-        }
-    } else {
-        PreviewThumb(
-            file = file,
-            vm = vm,
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxHeight()
-                .clip(MaterialTheme.shapes.small),
-            iconHeightDp = 24,
-        )
-    }
-}
-
-/** Decrypted preview or a type-icon fallback inside [modifier]'s bounds. */
-@Composable
-private fun PreviewThumb(
-    file: VaultFile,
-    vm: HomeViewModel,
-    modifier: Modifier = Modifier,
-    iconHeightDp: Int = 28,
-) {
-    val thumb by produceState<Bitmap?>(
-        initialValue = null, key1 = file.id, key2 = file.hasThumbnail,
-    ) {
-        value = if (file.isVideo || file.isImage) {
-            vm.thumbnailFor(file.id, file.isVideo, file.isImage)
-        } else null
-    }
-    Box(modifier, contentAlignment = Alignment.Center) {
-        val bitmap = thumb
-        if (bitmap != null) {
-            Image(
-                bitmap = bitmap.asImageBitmap(),
-                contentDescription = file.name,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize(),
-            )
-        } else {
-            Icon(
-                imageVector = when {
-                    file.isImage -> Icons.Rounded.Image
-                    file.isVideo -> Icons.Rounded.VideoFile
-                    file.mimeType.startsWith("audio/") -> Icons.Rounded.AudioFile
-                    else -> Icons.Rounded.InsertDriveFile
-                },
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.height(iconHeightDp.dp),
-            )
-        }
-    }
-}
-
+/**
+ * Square grid tile with no card around it. At a 2dp gutter the photos themselves form the
+ * sheet, and a bordered box per tile would only add three columns of chrome. Selection is
+ * marked with corner brackets, so a selected photo is still the photo.
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FileTile(
@@ -1028,71 +1246,51 @@ private fun FileTile(
     onClick: (VaultFile) -> Unit,
     onLongPress: (VaultFile) -> Unit,
 ) {
-    val thumb by produceState<Bitmap?>(initialValue = null, key1 = file.id, key2 = file.hasThumbnail) {
-        // Self-healing preview: generate on demand when the stored thumb is missing.
-        value = vm.thumbnailFor(file.id, file.isVideo, file.isImage)
+    val duration by produceState<Long?>(null, file.id, file.isVideo) {
+        value = vm.durationFor(file.id, file.isVideo)
     }
-    val borderColor = if (isSelected) MaterialTheme.colorScheme.primary
-    else MaterialTheme.colorScheme.outlineVariant
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        border = BorderStroke(if (isSelected) 2.dp else 1.dp, borderColor),
+    val interaction = remember { MutableInteractionSource() }
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .aspectRatio(1f)
+            .pressScale(interaction)
+            .clip(AppRadius.media)
+            .background(MaterialTheme.colorScheme.surfaceContainer)
+            .combinedClickable(
+                interactionSource = interaction,
+                indication = null,
+                onClick = { onClick(file) },
+                onLongClick = { onLongPress(file) },
+            )
+            .semantics {
+                if (selectionMode) {
+                    stateDescription = if (isSelected) "Terpilih" else "Tidak terpilih"
+                }
+            },
     ) {
-        Box {
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .combinedClickable(
-                        onClick = { onClick(file) },
-                        onLongClick = { onLongPress(file) },
-                    ),
-            ) {
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(110.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    val bitmap = thumb
-                    if (bitmap != null) {
-                        Image(
-                            bitmap = bitmap.asImageBitmap(),
-                            contentDescription = file.name,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize(),
-                        )
-                    } else {
-                        Icon(
-                            imageVector = when {
-                                file.isVideo -> Icons.Rounded.VideoFile
-                                file.mimeType.startsWith("audio/") -> Icons.Rounded.AudioFile
-                                else -> Icons.Rounded.InsertDriveFile
-                            },
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.height(48.dp),
-                        )
-                    }
-                }
-                Column(Modifier.padding(10.dp)) {
-                    Text(file.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(FormatUtil.fileSize(file.size), style = MaterialTheme.typography.labelSmall)
-                }
-            }
-            if (selectionMode) {
-                Icon(
-                    if (isSelected) Icons.Rounded.CheckCircle else Icons.Rounded.Circle,
-                    contentDescription = null,
-                    tint = if (isSelected) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.outline.copy(alpha = 0.6f),
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(8.dp)
-                        .background(MaterialTheme.colorScheme.surface, CircleShape),
-                )
-            }
+        PreviewThumb(file = file, vm = vm, modifier = Modifier.fillMaxSize())
+
+        duration?.let { ms ->
+            Text(
+                FormatUtil.duration(ms),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(6.dp)
+                    .background(
+                        MaterialTheme.colorScheme.scrim.copy(alpha = 0.7f),
+                        AppRadius.pill,
+                    )
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
+            )
+        }
+        if (isSelected) {
+            SelectionBrackets(
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.matchParentSize(),
+            )
         }
     }
 }
@@ -1107,8 +1305,12 @@ private fun EntryDetailsList(
     onToggleSelect: (Long) -> Unit,
     onOpenFolder: (Long) -> Unit,
     onOpenFile: (VaultFile) -> Unit,
+    header: @Composable () -> Unit = {},
 ) {
     LazyColumn(Modifier.fillMaxSize()) {
+        item {
+            Box(Modifier.padding(horizontal = GalleryPageMargin, vertical = GalleryBlockGap)) { header() }
+        }
         items(entries, key = { entry ->
             when (entry) {
                 is VaultEntry.Folder -> "f${entry.folder.id}"
@@ -1122,6 +1324,7 @@ private fun EntryDetailsList(
             Row(
                 Modifier
                     .fillMaxWidth()
+                    .animateItem()
                     .combinedClickable(
                         onClick = {
                             when {
@@ -1141,7 +1344,12 @@ private fun EntryDetailsList(
                             }
                         },
                     )
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                    .semantics {
+                        if (selectionMode) {
+                            stateDescription = if (selected) "Terpilih" else "Tidak terpilih"
+                        }
+                    }
+                    .padding(horizontal = GalleryPageMargin, vertical = GalleryBlockGap),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 when (entry) {
@@ -1214,30 +1422,64 @@ private fun MiniPreview(file: VaultFile, vm: HomeViewModel, sizeDp: Int) {
     )
 }
 
+/**
+ * Search hits plus the "nothing matched" note. The note rides on top of the list instead of
+ * replacing it, so hits can fade away under it (animateItem) rather than vanishing the moment
+ * the query stops matching. The note only shows for a real query, which keeps clearing the field
+ * from flashing the empty message on the way back to the grid.
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun SearchResultsList(results: List<VaultFile>, onItemClick: (VaultFile) -> Unit) {
-    LazyColumn(Modifier.fillMaxSize()) {
-        items(results, key = { it.id }) { file ->
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .combinedClickable(onClick = { onItemClick(file) })
-                    .padding(horizontal = 20.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
+private fun SearchArea(
+    results: List<VaultFile>,
+    query: String,
+    onItemClick: (VaultFile) -> Unit,
+) {
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(Modifier.fillMaxSize()) {
+            items(results, key = { it.id }) { file ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .animateItem()
+                        .combinedClickable(onClick = { onItemClick(file) })
+                        .padding(horizontal = GalleryPageMargin, vertical = GalleryBlockGap),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        when {
+                            file.isVideo -> Icons.Rounded.VideoFile
+                            file.isImage -> Icons.Rounded.InsertDriveFile
+                            file.mimeType.startsWith("audio/") -> Icons.Rounded.AudioFile
+                            else -> Icons.Rounded.InsertDriveFile
+                        },
+                        null,
+                    )
+                    Column(Modifier.padding(start = 14.dp)) {
+                        Text(file.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(FormatUtil.fileSize(file.size), style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+        }
+        Box(Modifier.align(Alignment.Center)) {
+            AnimatedVisibility(
+                visible = query.isNotBlank() && results.isEmpty(),
+                enter = fadeIn(tween(AppMotion.VIEWER_FADE_MS)),
+                exit = fadeOut(tween(AppMotion.VIEWER_FADE_MS)),
             ) {
-                Icon(
-                    when {
-                        file.isVideo -> Icons.Rounded.VideoFile
-                        file.isImage -> Icons.Rounded.InsertDriveFile
-                        file.mimeType.startsWith("audio/") -> Icons.Rounded.AudioFile
-                        else -> Icons.Rounded.InsertDriveFile
-                    },
-                    null,
-                )
-                Column(Modifier.padding(start = 14.dp)) {
-                    Text(file.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(FormatUtil.fileSize(file.size), style = MaterialTheme.typography.labelSmall)
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(horizontal = 32.dp),
+                ) {
+                    Text("Tidak ada file yang cocok", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Tidak ada nama yang mengandung \"$query\". Coba kata kunci lain.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                    )
                 }
             }
         }

@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.os.Bundle
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
@@ -23,6 +24,7 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,7 +45,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteSweep
+import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.FindInPage
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.KeyboardArrowUp
+import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Shield
@@ -77,6 +83,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.fragment.app.FragmentActivity
@@ -94,17 +101,9 @@ import kotlinx.coroutines.launch
  * - Brave-style shields with live blocked-count badge, per-tab off,
  *   popup/new-tab blocking, path-pattern rules + host blocklist
  */
-private val START_PAGE = """
-    data:text/html,<html><head><meta charset='utf-8'/><meta name='viewport' content='width=device-width,initial-scale=1'/>
-    <style>body{background:%23101218;color:%23e6e6e6;font-family:sans-serif;padding:28px;line-height:1.7}
-    h2{color:%238ab4f8;margin-top:0}li{margin-bottom:10px}</style></head>
-    <body><h2>&#128274; Browser Privat</h2><ul>
-    <li>Ketik alamat <b>https://</b>&hellip; atau kata kunci pencarian.</li>
-    <li>Tab bertahan walau pindah ke Gallery &mdash; bersihkan manual lewat menu &#8942;.</li>
-    <li>Iklan/tracker/popup diblokir &mdash; badge &#128737;&#65039; menghitungnya.</li>
-    <li>Unduhan langsung terenkripsi masuk vault.</li>
-    </ul></body></html>
-""".trimIndent().replace("\n", "")
+/** New tabs open straight on Google: the old custom start screen confused more than it
+ *  helped. The omnibox still searches whichever engine is chosen in Settings. */
+private const val START_PAGE = "https://www.google.com/"
 
 /** Shown once per app process, not once per browser visit. */
 private var disclaimerShownThisSession = false
@@ -127,6 +126,7 @@ fun PrivateBrowserScreen(
     val progressMap = BrowserSession.progressMap
     val navMap = BrowserSession.navMap
     val urlMap = BrowserSession.urlMap
+    val errorMap = BrowserSession.errorMap
     val hostWhitelist = BrowserSession.hostWhitelist
 
     var activeTabId by remember { mutableStateOf(BrowserSession.activeTabId) }
@@ -262,6 +262,17 @@ fun PrivateBrowserScreen(
 
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 ShieldBlocker.resetTab(tabId)
+                errorMap.remove(tabId)
+            }
+
+            override fun onReceivedError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                error: WebResourceError?,
+            ) {
+                if (request?.isForMainFrame != true) return
+                val detail = error?.description?.toString()?.takeIf { it.isNotBlank() }
+                errorMap[tabId] = detail ?: "Penyebab tidak diketahui"
             }
 
             override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
@@ -505,7 +516,7 @@ fun PrivateBrowserScreen(
             }
             Box {
                 IconButton(onClick = { menuOpen = true }) {
-                    Text("⋮", style = MaterialTheme.typography.titleLarge)
+                    Icon(Icons.Rounded.MoreVert, contentDescription = "Menu lainnya")
                 }
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                     DropdownMenuItem(
@@ -593,8 +604,12 @@ fun PrivateBrowserScreen(
                     modifier = Modifier.weight(1f),
                 )
                 Text("$findMatches", style = MaterialTheme.typography.bodySmall)
-                IconButton(onClick = { activeWebView()?.findNext(false) }) { Text("▲") }
-                IconButton(onClick = { activeWebView()?.findNext(true) }) { Text("▼") }
+                IconButton(onClick = { activeWebView()?.findNext(false) }) {
+                    Icon(Icons.Rounded.KeyboardArrowUp, contentDescription = "Hasil sebelumnya")
+                }
+                IconButton(onClick = { activeWebView()?.findNext(true) }) {
+                    Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = "Hasil berikutnya")
+                }
                 IconButton(onClick = { showFindBar = false }) { Icon(Icons.Rounded.Close, "Tutup") }
             }
         }
@@ -622,6 +637,43 @@ fun PrivateBrowserScreen(
                 modifier = Modifier.fillMaxSize(),
             )
 
+            val loadFailure = activeTabId?.let { errorMap[it] }
+            if (loadFailure != null) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.background)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = {},
+                        )
+                        .padding(horizontal = 32.dp),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Icon(
+                        Icons.Rounded.ErrorOutline,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(48.dp),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text("Halaman gagal dimuat", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        loadFailure,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    TextButton(onClick = {
+                        activeTabId?.let { errorMap.remove(it) }
+                        activeWebView()?.reload()
+                    }) { Text("Coba lagi") }
+                }
+            }
         }
     }
 

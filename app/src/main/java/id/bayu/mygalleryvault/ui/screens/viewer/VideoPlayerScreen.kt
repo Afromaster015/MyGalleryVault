@@ -32,6 +32,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.FormatSize
+import androidx.compose.material.icons.rounded.Fullscreen
+import androidx.compose.material.icons.rounded.FullscreenExit
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Speed
@@ -144,6 +146,7 @@ fun VideoPlayerScreen(
     var baseSpeed by remember { mutableFloatStateOf(1f) }
     var boosting by remember { mutableStateOf(false) }
     var isMuted by remember { mutableStateOf(false) }
+    var isFullscreen by remember { mutableStateOf(false) }
 
     var showSpeedSheet by remember { mutableStateOf(false) }
     var showSubtitleSheet by remember { mutableStateOf(false) }
@@ -405,13 +408,6 @@ fun VideoPlayerScreen(
                 applySubtitleSelection(player, currentSelectedSubId)
             }
 
-            override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
-                if (videoSize.width > videoSize.height) {
-                    activity.requestedOrientation =
-                        android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-                }
-            }
-
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                 android.util.Log.d(
                     "SV_Player",
@@ -460,6 +456,10 @@ fun VideoPlayerScreen(
         controller.hide(WindowInsetsCompat.Type.systemBars())
         controller.systemBarsBehavior =
             WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        // The player opens in portrait and stays there. Turning the screen is the fullscreen
+        // button's job, so a landscape video no longer lands already rotated.
+        activity.requestedOrientation =
+            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         onDispose {
             window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             controller.show(WindowInsetsCompat.Type.systemBars())
@@ -504,6 +504,23 @@ fun VideoPlayerScreen(
         // A stray tap right after a seek streak must not flip the controls.
         if (seekStreak > 0 && SystemClock.elapsedRealtime() - lastStreakAt <= STREAK_WINDOW_MS) return
         controlsVisible = !controlsVisible
+    }
+
+    /**
+     * Fullscreen follows the video's own shape: a landscape video turns the screen sideways, a
+     * portrait one stays upright. Leaving fullscreen returns to portrait, which is also where
+     * the player starts, so exiting never leaves the app stuck sideways.
+     */
+    fun toggleFullscreen() {
+        val on = !isFullscreen
+        isFullscreen = on
+        val size = player.videoSize
+        val landscapeVideo = size.width > 0 && size.height > 0 && size.width >= size.height
+        activity.requestedOrientation = when {
+            !on -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            landscapeVideo -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            else -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        }
     }
 
     // Caption style object rebuilt in composition so style edits re-run the
@@ -798,6 +815,14 @@ fun VideoPlayerScreen(
                         }
                         IconButton(onClick = { showSubtitleStyleSheet = true }) {
                             Icon(Icons.Rounded.FormatSize, "Tampilan subtitle", tint = Color.White)
+                        }
+                        IconButton(onClick = ::toggleFullscreen) {
+                            Icon(
+                                if (isFullscreen) Icons.Rounded.FullscreenExit
+                                else Icons.Rounded.Fullscreen,
+                                if (isFullscreen) "Keluar layar penuh" else "Layar penuh",
+                                tint = Color.White,
+                            )
                         }
                     }
                 }

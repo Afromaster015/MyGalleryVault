@@ -35,6 +35,9 @@ object BrowserSession {
     val navMap = mutableStateMapOf<String, Pair<Boolean, Boolean>>()
     val urlMap = mutableStateMapOf<String, String>()
 
+    /** Last main-frame load failure per tab; null/absent means the page loaded. */
+    val errorMap = mutableStateMapOf<String, String>()
+
     var activeTabId: String? by mutableStateOf(null)
     var shieldsOffTabs: Set<String> by mutableStateOf(emptySet())
     var tabsBumper by mutableStateOf(0)
@@ -63,6 +66,7 @@ object BrowserSession {
         progressMap.clear()
         navMap.clear()
         urlMap.clear()
+        errorMap.clear()
         registry.clear()
         shieldsOffTabs = emptySet()
         hostWhitelist.clear()

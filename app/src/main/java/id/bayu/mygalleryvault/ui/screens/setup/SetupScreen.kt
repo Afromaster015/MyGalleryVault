@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -24,6 +25,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -147,6 +149,7 @@ fun SetupScreen(onSetupComplete: () -> Unit, modifier: Modifier = Modifier) {
         Spacer(Modifier.height(24.dp))
         Button(
             onClick = {
+                if (busy) return@Button
                 busy = true
                 error = null
                 vm.setup(pin.toCharArray(), confirm.toCharArray()) { err ->
@@ -154,12 +157,20 @@ fun SetupScreen(onSetupComplete: () -> Unit, modifier: Modifier = Modifier) {
                     if (err != null) error = err else onSetupComplete()
                 }
             },
-            enabled = !busy && pin.length >= AuthRepository.MIN_PIN_LENGTH &&
+            // Stay enabled-looking while working: the disabled style would grey the coral out
+            // and leave the spinner with nothing to sit on. Re-entry is guarded above instead.
+            enabled = pin.length >= AuthRepository.MIN_PIN_LENGTH &&
                 confirm.length >= AuthRepository.MIN_PIN_LENGTH && acknowledged,
             modifier = Modifier.fillMaxWidth(),
         ) {
             if (busy) {
-                CircularProgressIndicator(modifier = Modifier.height(20.dp))
+                CircularProgressIndicator(
+                    modifier = Modifier.size(20.dp),
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    strokeWidth = 2.dp,
+                    // No track ring: on a filled button it only muddies the arc.
+                    trackColor = Color.Transparent,
+                )
             } else {
                 Text("Buat Vault")
             }

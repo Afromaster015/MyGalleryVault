@@ -77,6 +77,10 @@ fun TransferProgressDialog(
                     }
                 }
 
+                val animatedOverall by animateFloatAsState(
+                    targetValue = progress.overallFraction.coerceIn(0f, 1f),
+                    label = "overall_progress",
+                )
                 Column {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
@@ -94,7 +98,7 @@ fun TransferProgressDialog(
                     }
                     Spacer(Modifier.height(4.dp))
                     LinearProgressIndicator(
-                        progress = { progress.overallFraction.coerceIn(0f, 1f) },
+                        progress = { animatedOverall },
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(6.dp),

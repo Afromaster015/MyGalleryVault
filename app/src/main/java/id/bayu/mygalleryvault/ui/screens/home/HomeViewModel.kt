@@ -15,9 +15,13 @@ import id.bayu.mygalleryvault.domain.model.TransferKind
 import id.bayu.mygalleryvault.domain.model.TransferProgress
 import id.bayu.mygalleryvault.domain.model.VaultEntry
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
@@ -33,8 +37,33 @@ class HomeViewModel(
 
     private val sort = MutableStateFlow(SortOption.NEWEST)
 
-    val entries: StateFlow<List<VaultEntry>> = repo.observeEntries(folderId, sort)
+    private val _entriesLoaded = MutableStateFlow(false)
+    val entriesLoaded: StateFlow<Boolean> = _entriesLoaded
+
+    private val _entriesError = MutableStateFlow<String?>(null)
+    val entriesError: StateFlow<String?> = _entriesError
+
+    private val retries = MutableStateFlow(0)
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val entries: StateFlow<List<VaultEntry>> = retries
+        .flatMapLatest { repo.observeEntries(folderId, sort) }
+        .onEach {
+            _entriesError.value = null
+            _entriesLoaded.value = true
+        }
+        .catch { t ->
+            _entriesError.value = t.message ?: "Penyebab tidak diketahui"
+            _entriesLoaded.value = true
+        }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** Re-subscribes after a failed load; the failed flow has already terminated. */
+    fun retry() {
+        _entriesError.value = null
+        _entriesLoaded.value = false
+        retries.value++
+    }
 
     val currentSort = sort
 
@@ -343,6 +372,52 @@ class HomeViewModel(
         }
     }
 
+    // ---- storage summary ----
+
+    /** Real encrypted payload size of this slot, for the gallery storage card. */
+    suspend fun storageUsedBytes(): Long =
+        try {
+            withContext(Dispatchers.IO) { repo.stats().totalSizeBytes }
+        } catch (_: Exception) {
+            0L
+        }
+
+    // ---- video duration badges ----
+
+    /**
+     * Duration in ms per video, resolved at most once per session per file.
+     * Probing decrypts a ranged slice of the container, so results are cached,
+     * videos that yield nothing are remembered as "no badge", and probes run
+     * one at a time on their own worker so they never block thumbnail decoding.
+     */
+    private val durationCache = object : LinkedHashMap<Long, Long>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: Map.Entry<Long, Long>): Boolean = size > 256
+    }
+
+    private val probedWithoutDuration = HashSet<Long>()
+    private val probeWorker = kotlinx.coroutines.sync.Mutex()
+
+    suspend fun durationFor(fileId: Long, isVideo: Boolean): Long? {
+        if (!isVideo) return null
+        synchronized(durationCache) { durationCache[fileId] }?.let { return it }
+        if (synchronized(probedWithoutDuration) { fileId in probedWithoutDuration }) return null
+
+        val ms = probeWorker.withLock {
+            synchronized(durationCache) { durationCache[fileId] }?.let { return@withLock it }
+            try {
+                thumbnails.probeVideoDurationMs(fileId)
+            } catch (_: Exception) {
+                null
+            }
+        }
+        if (ms == null || ms <= 0L) {
+            synchronized(probedWithoutDuration) { probedWithoutDuration.add(fileId) }
+            return null
+        }
+        synchronized(durationCache) { durationCache[fileId] = ms }
+        return ms
+    }
+
     private companion object {
         const val TAG_THUMB = "SV_Thumb"
         const val PREVIEW_COUNT = 4
@@ -395,4 +470,17 @@ class HomeViewModel(
         }
         return msg
     }
+}
+
+/** Gallery type filter driven by the chip row. Folders always stay visible. */
+enum class MediaFilter(val label: String, val noun: String) {
+    ALL("All", "media"),
+    PHOTOS("Photos", "foto"),
+    VIDEOS("Videos", "video"),
+}
+
+fun List<VaultEntry>.filterBy(filter: MediaFilter): List<VaultEntry> = when (filter) {
+    MediaFilter.ALL -> this
+    MediaFilter.PHOTOS -> filter { entry -> entry !is VaultEntry.File || entry.file.isImage }
+    MediaFilter.VIDEOS -> filter { entry -> entry !is VaultEntry.File || entry.file.isVideo }
 }

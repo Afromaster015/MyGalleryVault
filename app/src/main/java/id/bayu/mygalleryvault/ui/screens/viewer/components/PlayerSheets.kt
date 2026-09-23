@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -301,6 +302,7 @@ private fun ColorSwatch(
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
+            .defaultMinSize(minHeight = 48.dp)
             .clickable(onClick = onClick)
             .padding(horizontal = 6.dp, vertical = 4.dp),
     ) {

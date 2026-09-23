@@ -5,6 +5,7 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.biometric.BiometricPrompt
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -37,7 +38,8 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.CenterAlignedTopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -50,8 +52,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -80,7 +84,7 @@ import kotlinx.coroutines.withContext
 @Composable
 fun SettingsScreen(
     activity: FragmentActivity,
-    onBack: () -> Unit,
+    onBack: (() -> Unit)? = null,
 ) {
     val app = activity.application as SecureVaultApp
     val container = app.container
@@ -230,11 +234,23 @@ fun SettingsScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("Pengaturan") },
+            CenterAlignedTopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = Color.Transparent,
+                ),
+                title = {
+                    Text(
+                        "Pengaturan",
+                        style = MaterialTheme.typography.titleLarge.copy(
+                            fontWeight = FontWeight.Bold,
+                        ),
+                    )
+                },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Kembali")
+                    if (onBack != null) {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Kembali")
+                        }
                     }
                 },
             )
@@ -522,7 +538,7 @@ fun SettingsScreen(
             Spacer(Modifier.height(32.dp))
             TextButton(onClick = {
                 VaultSession.lockNow()
-                onBack()
+                onBack?.invoke()
             }) { Text("Kunci vault sekarang") }
         }
     }
@@ -1019,9 +1035,13 @@ fun SettingsScreen(
             title = { Text("Mengoptimalkan...") },
             text = {
                 val p = optimizeProgress
+                val animatedOptimizeProgress by animateFloatAsState(
+                    targetValue = if (p != null && p.second > 0) p.first.toFloat() / p.second else 0f,
+                    label = "optimizeProgress",
+                )
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     LinearProgressIndicator(
-                        progress = { if (p != null && p.second > 0) p.first.toFloat() / p.second else 0f },
+                        progress = { animatedOptimizeProgress },
                         modifier = Modifier.fillMaxWidth(),
                     )
                     Text(
