@@ -36,6 +36,8 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchColors
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.CenterAlignedTopAppBar
@@ -76,6 +78,7 @@ import id.bayu.mygalleryvault.domain.model.TransferProgress
 import id.bayu.mygalleryvault.domain.model.VaultSlot
 import id.bayu.mygalleryvault.ui.components.BiometricHelper
 import id.bayu.mygalleryvault.ui.components.FormatUtil
+import id.bayu.mygalleryvault.ui.theme.sanityColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -526,7 +529,7 @@ fun SettingsScreen(
             Spacer(Modifier.height(16.dp))
             SectionTitle("Tentang")
             Text(
-                "MyGalleryVault — vault terenkripsi AES-256-GCM. Kunci hanya ada di " +
+                "MyGalleryVault: vault terenkripsi AES-256-GCM. Kunci hanya ada di " +
                     "perangkat Anda. Aplikasi tidak mengirim data ke server manapun.",
                 style = MaterialTheme.typography.bodySmall,
             )
@@ -1132,6 +1135,7 @@ private fun BiometricRow(
                 checked = enabled,
                 onCheckedChange = { checked -> if (checked) onEnableRequest() else onDisable() },
                 enabled = true,
+                colors = vaultSwitchColors(),
             )
         }
     }
@@ -1178,6 +1182,23 @@ private fun SettingsRow(title: String, subtitle: String, onClick: () -> Unit) {
     }
 }
 
+/**
+ * Switch colours for this dark theme. Material's defaults draw the off state with a surfaceVariant
+ * track, an outline border and an outline thumb, and on this card all three land between about 1.1
+ * and 1.5 to 1 against the surface, so a switch that is off reads as if it were missing (R-25).
+ * Every token here comes from the measured contrast table in DESIGN.md rather than from a guess:
+ * stone border and Ash thumb on a card, orange track once it is on.
+ */
+@Composable
+private fun vaultSwitchColors(): SwitchColors = SwitchDefaults.colors(
+    checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
+    checkedTrackColor = MaterialTheme.colorScheme.primary,
+    checkedBorderColor = Color.Transparent,
+    uncheckedThumbColor = MaterialTheme.colorScheme.onSurfaceVariant,
+    uncheckedTrackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+    uncheckedBorderColor = sanityColors().stone,
+)
+
 @Composable
 private fun SwitchRow(
     title: String,
@@ -1197,7 +1218,12 @@ private fun SwitchRow(
                 Text(title, style = MaterialTheme.typography.bodyLarge)
                 Text(subtitle, style = MaterialTheme.typography.bodySmall)
             }
-            Switch(checked = checked, onCheckedChange = onChecked, enabled = enabled)
+            Switch(
+                checked = checked,
+                onCheckedChange = onChecked,
+                enabled = enabled,
+                colors = vaultSwitchColors(),
+            )
         }
     }
 }

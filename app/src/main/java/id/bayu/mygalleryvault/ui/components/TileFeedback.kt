@@ -5,13 +5,20 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.interaction.InteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import id.bayu.mygalleryvault.ui.theme.AppMotion
@@ -63,5 +70,31 @@ internal fun SelectionBrackets(
         bracket(size.width - inset, inset, -1f, 1f)
         bracket(inset, size.height - inset, 1f, -1f)
         bracket(size.width - inset, size.height - inset, -1f, -1f)
+    }
+}
+
+/**
+ * Name band under a grid tile. The height is fixed here rather than left to the text, and both
+ * tiles use it, so a row keeps one baseline whether it holds photos, folders, or a mix of the
+ * two. Centering the line inside the band gives it the same 4dp breathing room above the media
+ * that the block gap gives between rows.
+ */
+internal val TileLabelBand = 22.dp
+
+@Composable
+internal fun TileLabel(name: String, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(TileLabelBand),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        Text(
+            name,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }

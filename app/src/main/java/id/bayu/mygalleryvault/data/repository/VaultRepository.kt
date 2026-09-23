@@ -241,6 +241,37 @@ class VaultRepository(
         fileDao.moveToFolder(fileId, targetFolderId)
     }
 
+    /**
+     * Bulk move for the Gallery selection. A file is a plain parent update. A folder is refused
+     * when the target is the folder itself or sits somewhere inside it, because that would cut the
+     * branch off the tree and make everything under it unreachable; refusing keeps the vault whole.
+     * Returns the folder ids that were refused for that reason.
+     */
+    suspend fun moveInto(
+        fileIds: List<Long>,
+        folderIds: List<Long>,
+        targetFolderId: Long?,
+    ): List<Long> {
+        fileIds.forEach { fileDao.moveToFolder(it, targetFolderId) }
+        if (folderIds.isEmpty()) return emptyList()
+        val folders = folderDao.all().associateBy { it.id }
+
+        fun targetSitsInside(folderId: Long): Boolean {
+            var cursor = targetFolderId
+            while (cursor != null) {
+                if (cursor == folderId) return true
+                cursor = folders[cursor]?.parentId
+            }
+            return false
+        }
+
+        val (refused, movable) = folderIds.partition { targetSitsInside(it) }
+        movable.forEach { id ->
+            folders[id]?.let { folderDao.update(it.copy(parentId = targetFolderId)) }
+        }
+        return refused
+    }
+
     // ---------- Stats (§33) ----------
 
     suspend fun stats(): VaultStats = VaultStats(

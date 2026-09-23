@@ -130,8 +130,8 @@ fun SubtitleSheet(
         )
         if (vaultEntries.isEmpty()) {
             Text(
-                "Belum ada file subtitle (.srt/.ass/.vtt) di vault — " +
-                    "impor dulu lewat tombol + di Gallery.",
+                "Belum ada file subtitle (.srt/.ass/.vtt) di vault. " +
+                    "Impor dulu lewat tombol + di Gallery.",
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
             )

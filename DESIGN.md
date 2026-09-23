@@ -34,6 +34,12 @@ ENERGY 1 / RHYTHM 2 / MOTION 3
 - **RHYTHM 2** (naik dari 1): bahasanya tetap satu, tapi dua jenis isi kini sengaja dibedakan
   bentuknya. Foto dan file berdiri sendiri sebagai media tanpa bingkai, folder tampil sebagai wadah
   dengan label di bawahnya. Yang berbeda bukan gayanya, melainkan perannya.
+
+  Revisi atas permintaan pemilik: nama file kini ikut tampil di grid, jadi **kedua** petak punya label
+  di bawahnya. Konsekuensinya disadari dan tertulis: label berhenti menjadi pembeda, dan perannya
+  pindah ke bentuk cover. Folder tetap mosaik 2x2 di dalam sudut kontainer, file tetap satu gambar
+  yang menyentuh tepi dengan sudut siku. Yang dipertahankan dari aturan lama adalah band nama yang
+  setinggi sama untuk keduanya, supaya satu baris grid tetap rata walau isinya campuran.
 - **MOTION 3** (naik dari 2): gerak dipakai penuh sebagai bahasa, bukan bumbu. Dua aturan yang
   mengikat: setiap gerakan menggambarkan sesuatu yang nyata (arah perpindahan, asal layar, benda
   yang baru kamu sentuh), dan tidak ada yang bergerak tanpa pemicu. Tidak ada animasi berulang,
@@ -145,7 +151,7 @@ Alasan pemilihan Inter: [DIISI PEMILIK]
   |---|---|---|
   | Media | `0dp` | foto dan file di grid, slot pratinjau di dalam petak folder |
   | Kontainer | `4dp` | petak folder, kartu, sheet, dialog |
-  | Pill | `50%` | FAB, search bar di Gallery, badge durasi video |
+  | Pill | `50%` | FAB, search bar di Gallery, kotak URL di Browser, badge durasi video |
 
   Alasan satu baris: skala lama `3/5/6/12/16` dipakai serentak tanpa arti, jadi bentuk tidak
   memberi tahu apa pun. Sekarang orang bisa menebak "ini bisa ditekan" dari bentuknya (R-11, R-31).
@@ -160,8 +166,11 @@ Alasan pemilihan Inter: [DIISI PEMILIK]
 - **`AppShapes`** diturunkan ke ujung sempit skala (`2/2/4/4/8`) supaya komponen Material yang belum
   kita ganti sendiri ikut berbahasa sama, bukan tetap berbucu `16dp`.
 - **Jarak**: skala yang dipakai app ini: `4 / 8 / 12 / 16 / 20 / 24 / 32 dp`.
-  Gutter grid media sengaja `2dp`, di luar skala itu, dengan alasan: jarak antar foto harus lebih
-  kecil daripada jarak antar blok, supaya grid terbaca sebagai satu lembar, bukan tumpukan kartu.
+  Gutter grid media `4dp`, tetap lebih kecil daripada jarak antar blok supaya grid terbaca sebagai
+  satu lembar, bukan tumpukan kartu. Nilainya naik dari `2dp` ketika petak grid mendapat band nama:
+  pada `2dp` nama petak yang bersebelahan hampir bersentuhan. Setiap petak grid menyisakan band nama
+  setinggi `22dp` di bawah medianya, dan tingginya sama untuk file maupun folder, supaya satu baris
+  grid tetap rata walau isinya campuran.
   Di layar Gallery, **margin halaman diseragamkan `16dp`** untuk grid, daftar, dan baris hasil
   search, dengan jarak antar blok `8dp`. Alasan satu baris: sebelumnya grid memakai `8dp`, daftar
   `16dp`, dan hasil search `20dp`, sehingga berganti mode terlihat menggeser header. Satu margin
@@ -219,6 +228,32 @@ Navigasi bawah punya **tiga slot**, dan setiap slot harus punya tujuan nyata (R-
 - **Folder tidak punya tab sendiri.** Folder tingkat akar tampil sebagai petak di dalam tab Gallery,
   dan mengetuknya membuka folder yang sama seperti sebelumnya. Jadi tidak ada jalan menuju folder
   yang hilang ketika tab Albums dihapus (R-24).
+- **Chip All / Photos / Videos: folder hanya muncul di All.** Alasan: folder bukan foto dan bukan
+  video, jadi menampilkannya di dua tampilan itu menaruh wadah di sebelah media yang tidak bisa
+  dibandingkan dan membuat jumlah yang terlihat tidak berarti. Konsekuensi yang disadari dan
+  diterima: di dalam folder yang isinya hanya subfolder, tampilan Photos dan Videos akan kosong, dan
+  itu memang benar. Tidak ada jalan yang terputus, karena file di dalam folder tetap terjangkau lewat
+  bar search: query-nya menanyakan seluruh vault, bukan hanya level yang sedang dibuka.
+- **Kartu storage di Gallery: ukuran vault dan sisa ruang, bukan kapasitas total.** Alasan: kapasitas
+  total perangkat bukan angka yang bisa dipakai pemilik untuk memutuskan apa pun, sedangkan sisa ruang
+  menentukan apakah import berikutnya masih muat. Bar di bawahnya tetap menunjukkan berapa bagian
+  perangkat yang ditempati vault, jadi bar dan labelnya menceritakan hal yang sama.
+- **Aksi seleksi di Gallery: Export, Pindahkan, Hapus, lalu menu overflow (Pilih semua, Bagikan,
+  Simpan ke Download).** Long-press pada petak masuk mode seleksi, jadi semua aksi terhadap pilihan
+  ada di bar atas, bukan di sheet per item. Alasan Pilih semua ada di overflow dan bukan di bar:
+  dengan Export, Pindahkan, dan Hapus sudah di bar, satu kontrol tambahan hanya menyisakan sekitar
+  48dp untuk judul yang di tengah pada layar 360dp, dan judulnya terpotong. Batas yang dijaga:
+  maksimal tiga aksi di bar seleksi, sisanya masuk overflow.
+  Alasan Pindahkan, Bagikan, dan Simpan ke Download ada di sini: satu-satunya jalan ke ketiganya
+  sebelumnya ada di sheet aksi lama yang sudah tidak pernah dipanggil lagi sejak long-press berubah
+  menjadi seleksi, sehingga praktis tidak ada jalan yang bisa dipakai. Aturan yang mengikat pada
+  Pindahkan: folder tidak boleh dipindah ke dalam dirinya sendiri atau ke dalam turunannya, karena
+  cabangnya akan lepas dari pohon dan isinya jadi tidak terjangkau. Karena itu folder yang sedang
+  dipindah tidak ditawarkan sebagai tujuan, dan penolakan yang tersisa dilaporkan lewat pesan, bukan
+  dibiarkan diam. Aturan pada Bagikan dan Simpan ke Download: keduanya menyerahkan satu file ke luar
+  vault, jadi keduanya hanya aktif ketika tepat satu file terpilih; folder atau pilihan banyak membuat
+  keduanya tidak aktif, dan label "Untuk satu file" menerangkan alasannya. Pilihan tidak dilepas
+  setelah Bagikan atau Simpan ke Download, karena isi di level ini memang tidak berubah.
 - **App bar: judul saja.** Tidak ada glyph merek di app bar manapun. Judul di tengah dan agak bold.
   Di Gallery, search tampil sebagai bar tetap di bawah judul, bukan mode yang dibuka lalu ditutup,
   supaya mencari file cukup satu ketukan. Menu overflow tetap dipertahankan. Bar search melepas
@@ -239,6 +274,14 @@ hanya satu jalan pintas ke hal yang sama.
 Catatan perubahan pada slot Browser: ditambahkan atas permintaan pemilik. Konsekuensi yang harus
 disadari, bar bawah kini terlihat di dalam browser, jadi browser tidak lagi layar immersive. Pintu lama
 di menu overflow Gallery dihapus supaya tidak ada dua jalan ke layar yang sama (R-24).
+
+- **Kotak URL browser: pill dengan tinggi tetap `44dp`, dan isinya mengikuti halaman secara realtime.**
+  Pill dipakai di sini karena kotak URL adalah kontrol, bukan permukaan, jadi ia sefamili search bar di
+  Gallery (R-11). Tingginya dikunci supaya pill pada kotak selebar ini tidak melebar jadi lozenge, dan
+  `44dp` sekaligus memenuhi ukuran target sentuh minimum (R-03). Isinya mengikuti URL tab yang sedang
+  dibuka, bukan menunggu halaman selesai masuk riwayat, sehingga alamat tidak tertinggal dan navigasi
+  yang tidak memuat ulang dokumen tetap terbaca. Selama kotak sedang diketik, teks pengguna yang
+  menang: URL yang masuk tidak menimpa ketikan, dan kotak menyelaraskan diri lagi begitu fokus lepas.
 
 Klarifikasi soal data browsing: sesi browser memang **sengaja** bertahan saat kamu pindah tab, bukan
 dibersihkan otomatis. Itu keputusan yang sudah ada di kode (`BrowserSession`) sebagai revisi atas

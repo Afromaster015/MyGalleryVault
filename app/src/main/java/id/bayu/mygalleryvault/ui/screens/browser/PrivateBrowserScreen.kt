@@ -25,6 +25,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -82,6 +83,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -90,6 +92,7 @@ import androidx.fragment.app.FragmentActivity
 import id.bayu.mygalleryvault.SecureVaultApp
 import id.bayu.mygalleryvault.core.browser.ShieldBlocker
 import id.bayu.mygalleryvault.domain.model.SearchEngine
+import id.bayu.mygalleryvault.ui.theme.AppRadius
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -107,6 +110,12 @@ private const val START_PAGE = "https://www.google.com/"
 
 /** Shown once per app process, not once per browser visit. */
 private var disclaimerShownThisSession = false
+
+/**
+ * Gap between the browser chrome controls. Small on purpose: the icon buttons already carry their
+ * own padding, so this only has to keep the omnibox from touching them.
+ */
+private val BrowserChromeGap = 4.dp
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -142,6 +151,11 @@ fun PrivateBrowserScreen(
 
     // ---------------- omnibox / chrome state ----------------
     var urlInput by remember { mutableStateOf(urlMap[activeTabId].orEmpty()) }
+    // While the field holds focus the user owns the text, so an incoming navigation must not
+    // overwrite what is being typed.
+    val omniboxInteraction = remember { MutableInteractionSource() }
+    val omniboxFocused by omniboxInteraction.collectIsFocusedAsState()
+    val focusManager = LocalFocusManager.current
     var menuOpen by remember { mutableStateOf(false) }
     var showEngineSheet by remember { mutableStateOf(false) }
     var showTabSwitcher by remember { mutableStateOf(false) }
@@ -178,6 +192,17 @@ fun PrivateBrowserScreen(
         }
     }
 
+    // The address bar mirrors the active tab instead of waiting for a history commit. That wait
+    // is why it used to lag behind the page, and why navigation that never reloads the document
+    // (pushState, replaceState, hash changes) did not reach it at all. Typing wins while the
+    // field is focused, and the bar resyncs the moment focus leaves it.
+    val liveUrl = activeTabId?.let { urlMap[it] }.orEmpty()
+    LaunchedEffect(liveUrl, activeTabId, omniboxFocused) {
+        if (!omniboxFocused && liveUrl.isNotBlank() && !liveUrl.startsWith("data:")) {
+            urlInput = liveUrl
+        }
+    }
+
     fun shieldsOn(tabId: String): Boolean =
         !shieldsOffTabs.contains(tabId) && shieldsDefaultOn
 
@@ -191,7 +216,13 @@ fun PrivateBrowserScreen(
 
     fun submitOmnibox() {
         if (urlInput.isBlank()) return
-        activeWebView()?.loadUrl(SearchEngine.resolveInput(urlInput, searchEngine))
+        val resolved = SearchEngine.resolveInput(urlInput, searchEngine)
+        // Show the resolved address right away instead of waiting for the WebView to report it
+        // back, and drop focus so the bar returns to its idle look and the keyboard closes.
+        activeTabId?.let { urlMap[it] = resolved }
+        urlInput = resolved
+        focusManager.clearFocus()
+        activeWebView()?.loadUrl(resolved)
     }
 
     // ---------------- webview factory ----------------
@@ -263,6 +294,14 @@ fun PrivateBrowserScreen(
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 ShieldBlocker.resetTab(tabId)
                 errorMap.remove(tabId)
+                // The destination is known the moment the load starts, which is what lets the
+                // address bar keep up with the page instead of trailing a history commit.
+                url?.let { urlMap[tabId] = it }
+            }
+
+            override fun onPageFinished(view: WebView?, url: String?) {
+                // Settle on the final address after any redirects.
+                url?.let { urlMap[tabId] = it }
             }
 
             override fun onReceivedError(
@@ -281,7 +320,6 @@ fun PrivateBrowserScreen(
                 BrowserSession.tabsBumper = tabsBumper
                 url?.let { urlMap[tabId] = it }
                 if (tabId == activeTabId) {
-                    if (!url.isNullOrEmpty() && !url.startsWith("data:")) urlInput = url
                     canGoBackGlobal = view?.canGoBack() == true
                     canGoForwardGlobal = view?.canGoForward() == true
                 }
@@ -453,8 +491,11 @@ fun PrivateBrowserScreen(
             .fillMaxSize()
             .statusBarsPadding()
     ) {
+        // One rhythm for the whole strip: the controls sit at even gaps and centre on the omnibox,
+        // so the pair on the left and the pair on the right stay symmetric around it.
         Row(
             verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(BrowserChromeGap),
             modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
         ) {
             Box {
@@ -506,10 +547,15 @@ fun PrivateBrowserScreen(
                 onValueChange = { urlInput = it },
                 placeholder = { Text("Cari / masukkan URL") },
                 singleLine = true,
-                textStyle = MaterialTheme.typography.bodySmall,
+                textStyle = MaterialTheme.typography.bodyMedium,
+                shape = AppRadius.pill,
+                interactionSource = omniboxInteraction,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                 keyboardActions = KeyboardActions(onGo = { submitOmnibox() }),
-                modifier = Modifier.weight(1f).padding(vertical = 4.dp),
+                // No forced height. Squeezing Material's outlined field below its own single-line
+                // height is what clipped the text; left alone, it keeps the line whole and centres
+                // it, and it lands on the same pill as the Gallery search bar.
+                modifier = Modifier.weight(1f),
             )
             IconButton(onClick = { activeWebView()?.reload() }) {
                 Icon(Icons.Rounded.Refresh, "Muat ulang")

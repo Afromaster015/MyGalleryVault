@@ -25,7 +25,6 @@ import androidx.compose.material.icons.rounded.InsertDriveFile
 import androidx.compose.material.icons.rounded.VideoFile
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
@@ -37,16 +36,16 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import id.bayu.mygalleryvault.domain.model.VaultFile
 import id.bayu.mygalleryvault.ui.screens.home.HomeViewModel
 import id.bayu.mygalleryvault.ui.theme.AppRadius
 
 /**
- * Album tile: a bare square cover of the folder's contents with the name on a mono line
- * underneath. The name sits below rather than on the cover so the tile reads as a container
- * of media, which is exactly what separates it from the square photos next to it.
+ * Album tile: a 2x2 cover of the folder's contents with the name on the shared label band
+ * underneath. A folder and a file both carry a name now, so the role is told apart by the cover
+ * instead: a folder is a mosaic inside a container corner, a file is one edge-to-edge picture
+ * with a square corner. The band is the same height on both, which keeps a mixed row level.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -125,16 +124,7 @@ internal fun FolderTile(
                 )
             }
         }
-        Text(
-            name,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 4.dp, start = 2.dp, end = 2.dp),
-        )
+        TileLabel(name)
     }
 }
 

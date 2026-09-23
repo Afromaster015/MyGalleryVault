@@ -303,6 +303,28 @@ class HomeViewModel(
         }
     }
 
+    /**
+     * Moves the current Gallery selection. A folder cannot go into itself or into its own
+     * descendant, and the refusal is reported rather than swallowed: a button that quietly does
+     * nothing reads as broken.
+     */
+    fun moveSelection(fileIds: List<Long>, folderIds: List<Long>, targetFolderId: Long?) {
+        if (fileIds.isEmpty() && folderIds.isEmpty()) return
+        viewModelScope.launch {
+            try {
+                val refused = repo.moveInto(fileIds, folderIds, targetFolderId)
+                _message.value = when {
+                    refused.isEmpty() -> "Dipindahkan"
+                    refused.size == folderIds.size && fileIds.isEmpty() ->
+                        "Tidak dipindahkan: folder tidak bisa masuk ke dalam dirinya sendiri"
+                    else -> "Dipindahkan, ${refused.size} folder dilewati"
+                }
+            } catch (e: Exception) {
+                _message.value = "Gagal memindahkan: ${e.message}"
+            }
+        }
+    }
+
     fun consumeMessage() {
         _message.value = null
     }
@@ -472,7 +494,12 @@ class HomeViewModel(
     }
 }
 
-/** Gallery type filter driven by the chip row. Folders always stay visible. */
+/**
+ * Gallery type filter driven by the chip row. Folders belong to the ALL view only: a folder is
+ * neither a photo nor a video, so keeping it in those two views made the visible items sit next to
+ * containers they cannot be compared with. Files inside folders stay reachable through the search
+ * bar, which queries the whole vault rather than the level currently open.
+ */
 enum class MediaFilter(val label: String, val noun: String) {
     ALL("All", "media"),
     PHOTOS("Photos", "foto"),
@@ -481,6 +508,6 @@ enum class MediaFilter(val label: String, val noun: String) {
 
 fun List<VaultEntry>.filterBy(filter: MediaFilter): List<VaultEntry> = when (filter) {
     MediaFilter.ALL -> this
-    MediaFilter.PHOTOS -> filter { entry -> entry !is VaultEntry.File || entry.file.isImage }
-    MediaFilter.VIDEOS -> filter { entry -> entry !is VaultEntry.File || entry.file.isVideo }
+    MediaFilter.PHOTOS -> filterIsInstance<VaultEntry.File>().filter { it.file.isImage }
+    MediaFilter.VIDEOS -> filterIsInstance<VaultEntry.File>().filter { it.file.isVideo }
 }

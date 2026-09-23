@@ -66,8 +66,14 @@ fun MoveToFolderDialog(
     onDismiss: () -> Unit,
     onPickRoot: () -> Unit,
     onPick: (Long) -> Unit,
+    /**
+     * Folders hidden from the target list. Moving a folder into itself is the mistake this list
+     * makes easiest, so the folders being moved are taken out of it up front; checks that need the
+     * whole tree stay in the repository, which can see it.
+     */
+    excludeFolderIds: Set<Long> = emptySet(),
 ) {
-    val folders = rememberFolders(app)
+    val folders = rememberFolders(app).filterNot { it.id in excludeFolderIds }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Pindahkan ke folder") },

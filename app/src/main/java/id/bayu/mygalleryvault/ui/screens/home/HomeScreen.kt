@@ -63,6 +63,7 @@ import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.InsertDriveFile
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.VideoFile
 import androidx.compose.material.icons.rounded.ViewList
 import androidx.compose.material3.AlertDialog
@@ -137,6 +138,8 @@ import id.bayu.mygalleryvault.ui.components.PreviewThumb
 import id.bayu.mygalleryvault.ui.components.SelectionBrackets
 import id.bayu.mygalleryvault.ui.components.ShareWarningDialog
 import id.bayu.mygalleryvault.ui.components.TextInputDialog
+import id.bayu.mygalleryvault.ui.components.TileLabel
+import id.bayu.mygalleryvault.ui.components.TileLabelBand
 import id.bayu.mygalleryvault.ui.components.TransferProgressDialog
 import id.bayu.mygalleryvault.ui.components.pressScale
 import id.bayu.mygalleryvault.ui.theme.AppMotion
@@ -154,6 +157,13 @@ private val GalleryPageMargin = 16.dp
 
 /** Vertical gap between blocks on the Gallery screen (header, rows). */
 private val GalleryBlockGap = 8.dp
+
+/**
+ * Gap between grid cells. It stays below [GalleryBlockGap] on purpose: space inside the sheet has
+ * to read as smaller than space between blocks. It moved from 2dp to 4dp when tiles gained a name
+ * band, because at 2dp the names of neighbouring tiles nearly touched.
+ */
+private val GalleryTileGap = 4.dp
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -189,11 +199,17 @@ fun HomeScreen(
             stat.blockCountLong * stat.blockSizeLong
         }.getOrDefault(0L)
     }
+    // Free space is what the caption reports. The device total is not something the owner can act
+    // on, while what is left is what decides whether the next import fits.
+    val storageFreeBytes = remember {
+        runCatching { android.os.StatFs(activity.filesDir.path).availableBytes }.getOrDefault(0L)
+    }
 
     val galleryHeader: @Composable () -> Unit = {
         GalleryHeader(
             usedBytes = storageUsedBytes,
             totalBytes = storageTotalBytes,
+            freeBytes = storageFreeBytes,
             filter = mediaFilter,
             onFilterChange = { mediaFilter = it },
             // Inside a folder the app bar already names the location, so only the chips
@@ -216,6 +232,7 @@ fun HomeScreen(
     }
 
     var overflowOpen by remember { mutableStateOf(false) }
+    var selectionMenuOpen by remember { mutableStateOf(false) }
 
     // The search field holds focus until something takes it back, which leaves the caret blinking
     // and the outline in its active colour long after the user has moved on.
@@ -242,6 +259,7 @@ fun HomeScreen(
     var bulkDeleteConfirm by remember { mutableStateOf(false) }
     var pendingDeleteIds by remember { mutableStateOf<List<Long>>(emptyList()) }
     var pendingExportIds by remember { mutableStateOf<List<Long>>(emptyList()) }
+    var pendingMoveIds by remember { mutableStateOf<List<Long>>(emptyList()) }
     var bulkBusy by remember { mutableStateOf(false) }
     // A tracked import/export (progress dialog) also disables destructive actions.
     val busyWithTransfer = bulkBusy || transferProgress != null
@@ -327,6 +345,32 @@ fun HomeScreen(
         entries.filterIsInstance<VaultEntry.File>().map { it.file.id }.toSet()
     }
 
+    /**
+     * Files and folders in a selection both move; the split exists only because the repository
+     * takes them as two lists. The selection is dropped afterwards because the moved items no
+     * longer sit in this level.
+     */
+    fun commitMove(targetFolderId: Long?) {
+        val ids = pendingMoveIds
+        vm.moveSelection(
+            fileIds = ids.filter { fileIdSet.contains(it) },
+            folderIds = ids.filterNot { fileIdSet.contains(it) },
+            targetFolderId = targetFolderId,
+        )
+        selectedIds.clear()
+        pendingMoveIds = emptyList()
+    }
+
+    /**
+     * The single file in the selection, or null when the selection is empty, holds a folder, or
+     * holds more than one item. Share and Save to Download both hand one file to something outside
+     * the vault, so they are offered only when there is exactly one file, instead of half-working
+     * on a multi-selection.
+     */
+    val singleSelectedFile: VaultFile? = selectedIds.singleOrNull()?.let { id ->
+        entries.filterIsInstance<VaultEntry.File>().firstOrNull { it.file.id == id }?.file
+    }
+
     Scaffold(
         topBar = {
             CenterAlignedTopAppBar(
@@ -358,10 +402,6 @@ fun HomeScreen(
                 },
                 actions = {
                     if (inSelection) {
-                        TextButton(
-                            onClick = { selectedIds.clear(); selectedIds.addAll(fileIdSet) },
-                            enabled = !busyWithTransfer,
-                        ) { Text("Semua") }
                         IconButton(
                             onClick = {
                                 pendingExportIds = selectedIds.filter { fileIdSet.contains(it) }
@@ -375,6 +415,12 @@ fun HomeScreen(
                             Icon(Icons.Rounded.FileDownload, contentDescription = "Export terpilih")
                         }
                         IconButton(
+                            onClick = { pendingMoveIds = selectedIds.toList() },
+                            enabled = !busyWithTransfer,
+                        ) {
+                            Icon(Icons.Rounded.DriveFileMove, contentDescription = "Pindahkan terpilih")
+                        }
+                        IconButton(
                             onClick = {
                                 pendingDeleteIds = selectedIds.toList()
                                 bulkDeleteConfirm = true
@@ -382,6 +428,70 @@ fun HomeScreen(
                             enabled = !busyWithTransfer,
                         ) {
                             Icon(Icons.Rounded.Delete, contentDescription = "Hapus terpilih")
+                        }
+                        Box {
+                            IconButton(
+                                onClick = { selectionMenuOpen = true },
+                                enabled = !busyWithTransfer,
+                            ) {
+                                Icon(Icons.Rounded.MoreVert, contentDescription = "Aksi lain")
+                            }
+                            DropdownMenu(
+                                expanded = selectionMenuOpen,
+                                onDismissRequest = { selectionMenuOpen = false },
+                            ) {
+                                // Select-all lives here rather than in the bar: with the three
+                                // actions that matter while selecting already in it, a fourth
+                                // control left the centred title about 48dp of room on a 360dp
+                                // screen, which truncated it.
+                                DropdownMenuItem(
+                                    text = { Text("Pilih semua") },
+                                    leadingIcon = { Icon(Icons.Rounded.Check, null) },
+                                    enabled = !busyWithTransfer && fileIdSet.isNotEmpty(),
+                                    onClick = {
+                                        selectionMenuOpen = false
+                                        selectedIds.clear()
+                                        selectedIds.addAll(fileIdSet)
+                                    },
+                                )
+                                HorizontalDivider(Modifier.padding(vertical = 4.dp))
+                                // Both of these take a single file: one is handed to another app
+                                // and the other writes one copy out. A folder or a multi-selection
+                                // leaves them disabled rather than half-working, and the label
+                                // above says why instead of leaving the greying unexplained.
+                                Text(
+                                    "Untuk satu file",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(
+                                        start = 12.dp, top = 4.dp, bottom = 4.dp,
+                                    ),
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Bagikan") },
+                                    leadingIcon = { Icon(Icons.Rounded.Share, null) },
+                                    enabled = singleSelectedFile != null,
+                                    onClick = {
+                                        selectionMenuOpen = false
+                                        shareTarget = singleSelectedFile
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Simpan ke Download") },
+                                    leadingIcon = { Icon(Icons.Rounded.FileDownload, null) },
+                                    enabled = singleSelectedFile != null,
+                                    onClick = {
+                                        selectionMenuOpen = false
+                                        singleSelectedFile?.let { file ->
+                                            vm.exportToDownloads(
+                                                file.id,
+                                                id.bayu.mygalleryvault.data.repository
+                                                    .TransferRepository.safeExportName(file.name),
+                                            )
+                                        }
+                                    },
+                                )
+                            }
                         }
                     } else {
                         Box {
@@ -616,8 +726,8 @@ fun HomeScreen(
                             horizontal = GalleryPageMargin,
                             vertical = GalleryBlockGap,
                         ),
-                        verticalArrangement = Arrangement.spacedBy(2.dp),
-                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                        verticalArrangement = Arrangement.spacedBy(GalleryTileGap),
+                        horizontalArrangement = Arrangement.spacedBy(GalleryTileGap),
                     ) {
                         item(span = { GridItemSpan(maxLineSpan) }) { galleryHeader() }
                         items(visibleEntries, key = { entry ->
@@ -846,6 +956,17 @@ fun HomeScreen(
         )
     }
 
+    if (pendingMoveIds.isNotEmpty()) {
+        MoveToFolderDialog(
+            app = app,
+            onDismiss = { pendingMoveIds = emptyList() },
+            onPickRoot = { commitMove(null) },
+            onPick = { target -> commitMove(target) },
+            // The folders being moved are not offered as their own destination.
+            excludeFolderIds = pendingMoveIds.filterNot { fileIdSet.contains(it) }.toSet(),
+        )
+    }
+
     moveTarget?.let { file ->
         MoveToFolderDialog(
             app = app,
@@ -1064,6 +1185,7 @@ private fun shareExternally(vm: HomeViewModel, activity: FragmentActivity, file:
 private fun GalleryHeader(
     usedBytes: Long,
     totalBytes: Long,
+    freeBytes: Long,
     filter: MediaFilter,
     onFilterChange: (MediaFilter) -> Unit,
     showSummary: Boolean = true,
@@ -1084,7 +1206,8 @@ private fun GalleryHeader(
             ) {
                 Column(Modifier.padding(14.dp)) {
                     Text(
-                        "Storage used ${FormatUtil.fileSize(usedBytes)} of ${FormatUtil.fileSize(totalBytes)}",
+                        "Vault ${FormatUtil.fileSize(usedBytes)}, free " +
+                            FormatUtil.fileSize(freeBytes),
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     Spacer(Modifier.height(10.dp))
@@ -1182,8 +1305,8 @@ private fun GalleryLoadingGrid() {
             horizontal = GalleryPageMargin,
             vertical = GalleryBlockGap,
         ),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        verticalArrangement = Arrangement.spacedBy(GalleryTileGap),
+        horizontalArrangement = Arrangement.spacedBy(GalleryTileGap),
     ) {
         item(span = { GridItemSpan(maxLineSpan) }) {
             Column(Modifier.fillMaxWidth()) {
@@ -1219,22 +1342,28 @@ private fun GalleryLoadingGrid() {
         }
         repeat(9) {
             item {
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(1f)
-                        .clip(MaterialTheme.shapes.medium)
-                        .background(skeleton),
-                )
+                Column(Modifier.fillMaxWidth()) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(1f)
+                            .clip(MaterialTheme.shapes.medium)
+                            .background(skeleton),
+                    )
+                    // The same band the real tiles reserve, so the grid does not jump when the
+                    // data lands.
+                    Spacer(Modifier.height(TileLabelBand))
+                }
             }
         }
     }
 }
 
 /**
- * Square grid tile with no card around it. At a 2dp gutter the photos themselves form the
- * sheet, and a bordered box per tile would only add three columns of chrome. Selection is
- * marked with corner brackets, so a selected photo is still the photo.
+ * Grid tile: the media fills its square with no card around it, and the name rides a label band
+ * underneath. The band is the same height on every tile, so a row keeps one baseline whether it
+ * holds photos, folders, or a mix of the two. Selection is marked with corner brackets, so a
+ * selected photo is still the photo.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -1250,13 +1379,10 @@ private fun FileTile(
         value = vm.durationFor(file.id, file.isVideo)
     }
     val interaction = remember { MutableInteractionSource() }
-    Box(
-        Modifier
+    Column(
+        modifier = Modifier
             .fillMaxWidth()
-            .aspectRatio(1f)
             .pressScale(interaction)
-            .clip(AppRadius.media)
-            .background(MaterialTheme.colorScheme.surfaceContainer)
             .combinedClickable(
                 interactionSource = interaction,
                 indication = null,
@@ -1269,29 +1395,38 @@ private fun FileTile(
                 }
             },
     ) {
-        PreviewThumb(file = file, vm = vm, modifier = Modifier.fillMaxSize())
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(1f)
+                .clip(AppRadius.media)
+                .background(MaterialTheme.colorScheme.surfaceContainer),
+        ) {
+            PreviewThumb(file = file, vm = vm, modifier = Modifier.fillMaxSize())
 
-        duration?.let { ms ->
-            Text(
-                FormatUtil.duration(ms),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(6.dp)
-                    .background(
-                        MaterialTheme.colorScheme.scrim.copy(alpha = 0.7f),
-                        AppRadius.pill,
-                    )
-                    .padding(horizontal = 4.dp, vertical = 2.dp),
-            )
+            duration?.let { ms ->
+                Text(
+                    FormatUtil.duration(ms),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(6.dp)
+                        .background(
+                            MaterialTheme.colorScheme.scrim.copy(alpha = 0.7f),
+                            AppRadius.pill,
+                        )
+                        .padding(horizontal = 4.dp, vertical = 2.dp),
+                )
+            }
+            if (isSelected) {
+                SelectionBrackets(
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.matchParentSize(),
+                )
+            }
         }
-        if (isSelected) {
-            SelectionBrackets(
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.matchParentSize(),
-            )
-        }
+        TileLabel(file.name)
     }
 }
 
