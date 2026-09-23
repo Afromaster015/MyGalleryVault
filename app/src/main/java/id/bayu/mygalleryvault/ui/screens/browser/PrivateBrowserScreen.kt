@@ -1,8 +1,15 @@
 package id.bayu.mygalleryvault.ui.screens.browser
 
 import android.annotation.SuppressLint
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
 import android.os.Bundle
+import android.view.View
+import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -11,6 +18,7 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
@@ -43,16 +51,22 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.DeleteSweep
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.FindInPage
+import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.OpenInBrowser
 import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Tab
 import androidx.compose.material.icons.rounded.TravelExplore
@@ -83,11 +97,15 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.fragment.app.FragmentActivity
 import id.bayu.mygalleryvault.SecureVaultApp
 import id.bayu.mygalleryvault.core.browser.ShieldBlocker
@@ -116,6 +134,22 @@ private var disclaimerShownThisSession = false
  * own padding, so this only has to keep the omnibox from touching them.
  */
 private val BrowserChromeGap = 4.dp
+
+/** What a long-press landed on, plus every address the menu can act upon. */
+private data class WebContextTarget(
+    val kind: Kind,
+    val linkUrl: String? = null,
+    val imageUrl: String? = null,
+) {
+    enum class Kind { LINK, IMAGE, IMAGE_LINK }
+}
+
+/** One row of the long-press menu. */
+private data class ContextAction(
+    val label: String,
+    val icon: ImageVector,
+    val onClick: () -> Unit,
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -165,6 +199,9 @@ fun PrivateBrowserScreen(
     var showShieldPanel by remember { mutableStateOf(false) }
     var shieldBadge by remember { mutableLongStateOf(0L) }
     var showDisclaimer by remember { mutableStateOf(!disclaimerShownThisSession) }
+    var contextTarget by remember { mutableStateOf<WebContextTarget?>(null) }
+    var fullscreenView by remember { mutableStateOf<View?>(null) }
+    var fullscreenCallback by remember { mutableStateOf<WebChromeClient.CustomViewCallback?>(null) }
     var canGoBackGlobal by remember { mutableStateOf(false) }
     var canGoForwardGlobal by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(false) }
@@ -225,15 +262,95 @@ fun PrivateBrowserScreen(
         activeWebView()?.loadUrl(resolved)
     }
 
+    // ---------------- shared actions ----------------
+
+    /** Loads an address in the tab that is already on screen. */
+    fun navigateCurrent(url: String) {
+        activeTabId?.let { urlMap[it] = url }
+        urlInput = url
+        activeWebView()?.loadUrl(url)
+    }
+
+    fun copyToClipboard(text: String) {
+        val cm = activity.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
+        cm.setPrimaryClip(ClipData.newPlainText("URL", text))
+        Toast.makeText(activity, "Alamat disalin", Toast.LENGTH_SHORT).show()
+    }
+
+    fun shareUrl(text: String) {
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, text)
+        }
+        activity.startActivity(Intent.createChooser(send, "Bagikan link"))
+    }
+
+    fun downloadToVault(url: String) {
+        Toast.makeText(activity, "Mengunduh ke vault...", Toast.LENGTH_SHORT).show()
+        scope.launch {
+            val outcome = app.container.currentStack().transfers.importUrl(url, null)
+            val msg = if (outcome.succeeded > 0) "Tersimpan di vault"
+            else "Unduhan gagal: ${outcome.failed.firstOrNull() ?: "unknown"}"
+            Toast.makeText(activity, msg, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    /**
+     * Hand the page its custom view back so it can leave fullscreen cleanly. The contract is
+     * detach-first: the embedder removes the view, then reports it hidden.
+     */
+    fun exitFullscreen() {
+        val cb = fullscreenCallback
+        fullscreenCallback = null
+        (fullscreenView?.parent as? ViewGroup)?.removeView(fullscreenView)
+        fullscreenView = null
+        runCatching { cb?.onCustomViewHidden() }
+    }
+
+    // ---------------- tab operations ----------------
+
+    /** Parks a tab's WebView: state saved, page dropped, resources released. */
+    fun hibernate(victimIds: List<String>) {
+        victimIds.forEach { vid ->
+            if (vid == activeTabId) return@forEach
+            webViews.remove(vid)?.let { wv ->
+                runCatching { savedStates[vid] = Bundle().also { wv.saveState(it) } }
+                runCatching {
+                    wv.stopLoading()
+                    wv.loadUrl("about:blank")
+                    wv.destroy()
+                }
+            }
+            registry.markHibernated(vid)
+        }
+    }
+
+    fun openNewTab(initialUrl: String? = null): String {
+        exitFullscreen()
+        activeTabId?.let { hibernate(registry.hibernateCandidates(it)) }
+        val id = registry.create()
+        if (initialUrl != null) BrowserSession.pendingUrls[id] = initialUrl
+        activeTabId = id
+        BrowserSession.activeTabId = id
+        urlInput = initialUrl.orEmpty()
+        loading = false
+        bumpVersion()
+        return id
+    }
+
     // ---------------- webview factory ----------------
 
     @SuppressLint("SetJavaScriptEnabled")
+    @Suppress("DEPRECATION")
     fun createWebView(tabId: String): WebView {
         val wv = WebView(activity)
         wv.settings.apply {
             javaScriptEnabled = true
-            domStorageEnabled = false
-            databaseEnabled = false
+            // Age gates / consent modals and most modern sites read localStorage or
+            // sessionStorage before anything renders. With these off the script throws and
+            // the dialog never appears, which is why such pages would not open at all.
+            domStorageEnabled = true
+            databaseEnabled = true
             @Suppress("DEPRECATION")
             saveFormData = false
             @Suppress("DEPRECATION")
@@ -332,8 +449,9 @@ fun PrivateBrowserScreen(
             }
 
             /**
-             * Popup / target=_blank hijack ("iklan newtab"): swallowed and
-             * counted instead of spawning a new window.
+             * A new window is honored only when the user's own tap asked for it
+             * (target=_blank on a link). Anything the page opened on its own is still a
+             * popup hijack ("iklan newtab") and gets swallowed and counted.
              */
             override fun onCreateWindow(
                 view: WebView?,
@@ -341,8 +459,40 @@ fun PrivateBrowserScreen(
                 isUserGesture: Boolean,
                 resultMsg: android.os.Message?,
             ): Boolean {
-                ShieldBlocker.increment(tabId)
-                return true // blocked
+                if (!isUserGesture) {
+                    ShieldBlocker.increment(tabId)
+                    return true // blocked
+                }
+                val transport = resultMsg?.obj as? WebView.WebViewTransport ?: return true
+                val newId = openNewTab()
+                val newWv = webViews[newId] ?: createWebView(newId).also { webViews[newId] = it }
+                transport.webView = newWv
+                resultMsg.sendToTarget()
+                bumpVersion()
+                return true
+            }
+
+            /**
+             * HTML5 video fullscreen. The page hands us a view to fill the screen with;
+             * without this the site's fullscreen button simply does nothing.
+             */
+            override fun onShowCustomView(
+                view: View?,
+                callback: WebChromeClient.CustomViewCallback?,
+            ) {
+                val target = view ?: return
+                if (fullscreenView != null) {
+                    callback?.onCustomViewHidden()
+                    return
+                }
+                fullscreenView = target
+                fullscreenCallback = callback
+            }
+
+            override fun onHideCustomView() {
+                (fullscreenView?.parent as? ViewGroup)?.removeView(fullscreenView)
+                fullscreenView = null
+                fullscreenCallback = null
             }
         }
 
@@ -350,17 +500,50 @@ fun PrivateBrowserScreen(
             findMatches = numberOfMatches
         }
 
-        wv.setDownloadListener { url, _, _, _, _ ->
-            Toast.makeText(activity, "Mengunduh ke vault...", Toast.LENGTH_SHORT).show()
-            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
-                val outcome = app.container.currentStack().transfers.importUrl(url, null)
-                val msg = if (outcome.succeeded > 0) "Tersimpan di vault"
-                else "Unduhan gagal: ${outcome.failed.firstOrNull() ?: "unknown"}"
-                Toast.makeText(activity, msg, Toast.LENGTH_LONG).show()
+        wv.setDownloadListener { url, _, _, _, _ -> downloadToVault(url) }
+
+        // Long-press becomes a browser context menu. Plain text falls through untouched so
+        // Android's own text selection (block + copy + web search) keeps working.
+        wv.setOnLongClickListener {
+            val hit = wv.hitTestResult
+            val extra = hit.extra
+            when (hit.type) {
+                WebView.HitTestResult.ANCHOR_TYPE,
+                WebView.HitTestResult.SRC_ANCHOR_TYPE -> {
+                    if (extra.isNullOrBlank()) return@setOnLongClickListener false
+                    contextTarget = WebContextTarget(WebContextTarget.Kind.LINK, linkUrl = extra)
+                    true
+                }
+
+                WebView.HitTestResult.IMAGE_TYPE -> {
+                    if (extra.isNullOrBlank()) return@setOnLongClickListener false
+                    contextTarget = WebContextTarget(WebContextTarget.Kind.IMAGE, imageUrl = extra)
+                    true
+                }
+
+                WebView.HitTestResult.IMAGE_ANCHOR_TYPE,
+                WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE -> {
+                    // The anchor href is known immediately; the <img> src arrives on a callback
+                    // (the extra only carries the link, not the picture inside it).
+                    val handler = object : android.os.Handler(android.os.Looper.getMainLooper()) {
+                        override fun handleMessage(msg: android.os.Message) {
+                            val src = msg.data?.getString("src")?.takeIf { it.isNotBlank() }
+                            contextTarget = WebContextTarget(
+                                WebContextTarget.Kind.IMAGE_LINK,
+                                linkUrl = extra,
+                                imageUrl = src,
+                            )
+                        }
+                    }
+                    wv.requestFocusNodeHref(android.os.Message.obtain(handler))
+                    true
+                }
+
+                else -> false
             }
         }
 
-        wv.loadUrl(START_PAGE)
+        wv.loadUrl(BrowserSession.pendingUrls.remove(tabId) ?: START_PAGE)
         return wv
     }
 
@@ -372,34 +555,6 @@ fun PrivateBrowserScreen(
         }
     }
 
-    fun hibernate(victimIds: List<String>) {
-        victimIds.forEach { vid ->
-            if (vid == activeTabId) return@forEach
-            webViews.remove(vid)?.let { wv ->
-                runCatching { savedStates[vid] = Bundle().also { wv.saveState(it) } }
-                runCatching {
-                    wv.stopLoading()
-                    wv.loadUrl("about:blank")
-                    wv.destroy()
-                }
-            }
-            registry.markHibernated(vid)
-        }
-    }
-
-    // ---------------- tab operations ----------------
-
-    fun openNewTab(): String {
-        activeTabId?.let { hibernate(registry.hibernateCandidates(it)) }
-        val id = registry.create()
-        activeTabId = id
-        BrowserSession.activeTabId = id
-        urlInput = ""
-        loading = false
-        bumpVersion()
-        return id
-    }
-
     fun closeTab(id: String) {
         webViews.remove(id)?.apply {
             runCatching {
@@ -407,6 +562,7 @@ fun PrivateBrowserScreen(
             }
         }
         savedStates.remove(id)
+        BrowserSession.pendingUrls.remove(id)
         desktopModes.remove(id)
         progressMap.remove(id)
         navMap.remove(id)
@@ -426,6 +582,7 @@ fun PrivateBrowserScreen(
 
     fun switchTo(id: String) {
         if (id == activeTabId) return
+        exitFullscreen()
         activeTabId?.let { cur ->
             webViews[cur]?.let { wv ->
                 runCatching { savedStates[cur] = Bundle().also { wv.saveState(it) } }
@@ -444,6 +601,7 @@ fun PrivateBrowserScreen(
     }
 
     fun wipeBrowserData() {
+        exitFullscreen()
         BrowserSession.wipeAll(activity)
         activeTabId = null
         val id = registry.create()
@@ -459,6 +617,8 @@ fun PrivateBrowserScreen(
 
     BackHandler(enabled = true) {
         when {
+            fullscreenView != null -> exitFullscreen()
+
             showFindBar -> {
                 showFindBar = false
                 activeWebView()?.clearMatches()
@@ -486,6 +646,44 @@ fun PrivateBrowserScreen(
         label = "browserProgress",
     )
 
+    // While a video owns the screen the system bars step aside; the moment it lets go, the
+    // screen returns to the app's resting portrait, exactly like the video player does.
+    val isFullscreen = fullscreenView != null
+    DisposableEffect(isFullscreen) {
+        val controller = WindowCompat.getInsetsController(activity.window, activity.window.decorView)
+        if (isFullscreen) {
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+            controller.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        } else {
+            controller.show(WindowInsetsCompat.Type.systemBars())
+        }
+        onDispose {
+            if (isFullscreen) {
+                controller.show(WindowInsetsCompat.Type.systemBars())
+                activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                exitFullscreen()
+            }
+        }
+    }
+
+    // The page only reveals the video's aspect ratio once its view has been measured, so wait
+    // for a real size before deciding which way to turn.
+    LaunchedEffect(fullscreenView) {
+        val fs = fullscreenView ?: return@LaunchedEffect
+        var tries = 0
+        while (tries < 40 && (fs.width <= 0 || fs.height <= 0)) {
+            delay(50)
+            tries++
+        }
+        if (fs.width > 0 && fs.height > 0) {
+            activity.requestedOrientation =
+                if (fs.width >= fs.height) ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        }
+    }
+
+    Box(Modifier.fillMaxSize()) {
     Column(
         Modifier
             .fillMaxSize()
@@ -723,6 +921,28 @@ fun PrivateBrowserScreen(
         }
     }
 
+        // A fullscreen video takes the whole screen: chrome, insets and all.
+        fullscreenView?.let { fs ->
+            AndroidView(
+                factory = { ctx ->
+                    FrameLayout(ctx).apply { setBackgroundColor(android.graphics.Color.BLACK) }
+                },
+                update = { container ->
+                    if (fs.parent !== container) {
+                        (fs.parent as? ViewGroup)?.removeView(fs)
+                        container.removeAllViews()
+                        container.addView(
+                            fs,
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                        )
+                    }
+                },
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+    }
+
     if (showTabSwitcher) {
         ModalBottomSheet(onDismissRequest = { showTabSwitcher = false }) {
             Row(
@@ -814,6 +1034,69 @@ fun PrivateBrowserScreen(
                         },
                     )
                     Text(engine.label)
+                }
+            }
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+
+    if (contextTarget != null) {
+        val target = contextTarget ?: WebContextTarget(WebContextTarget.Kind.LINK)
+        val link = target.linkUrl
+        val image = target.imageUrl
+        ModalBottomSheet(onDismissRequest = { contextTarget = null }) {
+            Text(
+                (link ?: image).orEmpty(),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+            )
+            Spacer(Modifier.height(8.dp))
+            val actions = when (target.kind) {
+                WebContextTarget.Kind.LINK -> listOfNotNull(
+                    link?.let { ContextAction("Buka", Icons.Rounded.OpenInBrowser) { navigateCurrent(it) } },
+                    link?.let { ContextAction("Buka di tab baru", Icons.AutoMirrored.Rounded.OpenInNew) { openNewTab(it) } },
+                    link?.let { ContextAction("Salin alamat link", Icons.Rounded.ContentCopy) { copyToClipboard(it) } },
+                    link?.let { ContextAction("Bagikan link", Icons.Rounded.Share) { shareUrl(it) } },
+                    link?.let { ContextAction("Unduh ke vault", Icons.Rounded.Download) { downloadToVault(it) } },
+                )
+
+                WebContextTarget.Kind.IMAGE -> listOfNotNull(
+                    image?.let { ContextAction("Buka gambar", Icons.Rounded.OpenInBrowser) { navigateCurrent(it) } },
+                    image?.let { ContextAction("Buka gambar di tab baru", Icons.AutoMirrored.Rounded.OpenInNew) { openNewTab(it) } },
+                    image?.let { ContextAction("Simpan gambar ke vault", Icons.Rounded.Download) { downloadToVault(it) } },
+                    image?.let { ContextAction("Salin alamat gambar", Icons.Rounded.ContentCopy) { copyToClipboard(it) } },
+                    image?.let { ContextAction("Bagikan gambar", Icons.Rounded.Share) { shareUrl(it) } },
+                )
+
+                WebContextTarget.Kind.IMAGE_LINK -> listOfNotNull(
+                    link?.let { ContextAction("Buka link", Icons.Rounded.OpenInBrowser) { navigateCurrent(it) } },
+                    link?.let { ContextAction("Buka link di tab baru", Icons.AutoMirrored.Rounded.OpenInNew) { openNewTab(it) } },
+                    image?.let { ContextAction("Buka gambar di tab baru", Icons.Rounded.Image) { openNewTab(it) } },
+                    image?.let { ContextAction("Simpan gambar ke vault", Icons.Rounded.Download) { downloadToVault(it) } },
+                    link?.let { ContextAction("Salin alamat link", Icons.Rounded.ContentCopy) { copyToClipboard(it) } },
+                    link?.let { ContextAction("Bagikan link", Icons.Rounded.Share) { shareUrl(it) } },
+                )
+            }
+            actions.forEach { action ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            contextTarget = null
+                            action.onClick()
+                        }
+                        .padding(horizontal = 20.dp, vertical = 12.dp),
+                ) {
+                    Icon(
+                        action.icon,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.size(16.dp))
+                    Text(action.label, style = MaterialTheme.typography.bodyMedium)
                 }
             }
             Spacer(Modifier.height(24.dp))

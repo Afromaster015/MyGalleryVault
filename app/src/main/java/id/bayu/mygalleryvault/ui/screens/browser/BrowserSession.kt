@@ -29,6 +29,9 @@ object BrowserSession {
     val webViews = mutableMapOf<String, WebView>()
     val savedStates = mutableMapOf<String, Bundle>()
 
+    /** Address a freshly created tab must open instead of the start page. */
+    val pendingUrls = mutableMapOf<String, String>()
+
     // Observable per-tab / global chrome state.
     val desktopModes = mutableStateMapOf<String, Boolean>()
     val progressMap = mutableStateMapOf<String, Int>()
@@ -62,6 +65,7 @@ object BrowserSession {
         }
         webViews.clear()
         savedStates.clear()
+        pendingUrls.clear()
         desktopModes.clear()
         progressMap.clear()
         navMap.clear()
