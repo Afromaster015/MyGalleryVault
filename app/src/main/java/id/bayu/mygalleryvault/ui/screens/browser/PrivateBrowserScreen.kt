@@ -9,6 +9,7 @@ import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
 import android.os.Bundle
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.SurfaceView
 import android.view.TextureView
 import android.view.View
@@ -113,12 +114,13 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.fragment.app.FragmentActivity
 import id.bayu.mygalleryvault.SecureVaultApp
 import id.bayu.mygalleryvault.core.browser.ShieldBlocker
-import id.bayu.mygalleryvault.core.browser.TranslateUrl
 import id.bayu.mygalleryvault.domain.model.SearchEngine
 import id.bayu.mygalleryvault.domain.model.TranslateLanguage
 import id.bayu.mygalleryvault.ui.theme.AppRadius
+import java.util.Locale
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import org.json.JSONTokener
 
 /**
  * Private browser "Shield Edition" (PRD §38):
@@ -147,8 +149,9 @@ data class WebContextTarget(
     val kind: Kind,
     val linkUrl: String? = null,
     val imageUrl: String? = null,
+    val videoUrl: String? = null,
 ) {
-    enum class Kind { LINK, IMAGE, IMAGE_LINK }
+    enum class Kind { LINK, IMAGE, IMAGE_LINK, VIDEO }
 }
 
 /** One row of the long-press menu. */
@@ -183,7 +186,6 @@ private fun handleWebLongPress(wv: WebView): Boolean {
     val hit = wv.hitTestResult
     val extra = hit.extra
     return when (hit.type) {
-        WebView.HitTestResult.ANCHOR_TYPE,
         WebView.HitTestResult.SRC_ANCHOR_TYPE -> {
             if (extra.isNullOrBlank()) return false
             BrowserSession.contextTarget = WebContextTarget(WebContextTarget.Kind.LINK, linkUrl = extra)
@@ -196,17 +198,28 @@ private fun handleWebLongPress(wv: WebView): Boolean {
             true
         }
 
-        WebView.HitTestResult.IMAGE_ANCHOR_TYPE,
+        // A picture inside a link is the one case the hit test only answers halfway: "extra"
+        // carries the PICTURE, not the address the link points at. Trusting it as the link is
+        // exactly what made a long-press on a video's thumbnail open the thumbnail. The href
+        // arrives a moment later through requestFocusNodeHref, so the menu opens with the
+        // picture rows and gains the link rows when that answer lands.
         WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE -> {
-            // The anchor href is known immediately; the <img> src arrives on a callback
-            // (the extra only carries the link, not the picture inside it).
+            val token = BrowserSession.nextToken()
+            BrowserSession.contextTarget = WebContextTarget(
+                WebContextTarget.Kind.IMAGE_LINK,
+                imageUrl = extra?.takeIf { it.isNotBlank() },
+            )
             val handler = object : android.os.Handler(android.os.Looper.getMainLooper()) {
                 override fun handleMessage(msg: android.os.Message) {
-                    val src = msg.data?.getString("src")?.takeIf { it.isNotBlank() }
+                    // A late answer must not reopen a menu that was already dismissed.
+                    if (BrowserSession.contextToken != token) return
+                    if (BrowserSession.contextTarget == null) return
+                    val data = msg.data ?: return
                     BrowserSession.contextTarget = WebContextTarget(
                         WebContextTarget.Kind.IMAGE_LINK,
-                        linkUrl = extra,
-                        imageUrl = src,
+                        linkUrl = data.getString("url")?.takeIf { it.isNotBlank() },
+                        imageUrl = data.getString("src")?.takeIf { it.isNotBlank() }
+                            ?: extra?.takeIf { it.isNotBlank() },
                     )
                 }
             }
@@ -214,7 +227,43 @@ private fun handleWebLongPress(wv: WebView): Boolean {
             true
         }
 
-        else -> false
+        // Anything else gets no menu of its own: plain text keeps Android's selection. A video is
+        // the one target the hit test never names, so the page is asked about that point instead,
+        // and the press is left unconsumed so selection keeps working when it is just text.
+        else -> {
+            probeVideoTarget(wv)
+            false
+        }
+    }
+}
+
+/**
+ * Asks the page what sits under the long-pressed point, because a <video> has no hit test type
+ * of its own. A video covered by its own poster overlay is still found by its box, and only
+ * direct media addresses come back: a blob: stream is not a file anyone can open or save.
+ */
+private fun probeVideoTarget(wv: WebView) {
+    val x = BrowserSession.lastTouchX ?: return
+    val y = BrowserSession.lastTouchY ?: return
+    val zoom = wv.resources.displayMetrics.density * (wv.scale.takeIf { it > 0f } ?: 1f)
+    if (zoom <= 0f) return
+    val cssX = String.format(Locale.US, "%.1f", x / zoom)
+    val cssY = String.format(Locale.US, "%.1f", y / zoom)
+    val script = "(function(){try{" +
+        "var el=document.elementFromPoint($cssX,$cssY);" +
+        "var v=el&&el.closest?el.closest('video'):null;" +
+        "if(!v){var all=document.querySelectorAll('video');" +
+        "for(var i=0;i<all.length;i++){var r=all[i].getBoundingClientRect();" +
+        "if(r.width>0&&r.height>0&&$cssX>=r.left&&$cssX<=r.right&&$cssY>=r.top&&$cssY<=r.bottom){v=all[i];break;}}}" +
+        "if(!v)return null;var s=v.currentSrc||v.src||'';" +
+        "if(!s){var t=v.querySelector('source');if(t)s=t.src||'';}" +
+        "return (s&&/^https?:/i.test(s))?s:null;}catch(e){return null;}})()"
+    wv.evaluateJavascript(script) { value ->
+        val url = runCatching { JSONTokener(value ?: "").nextValue() as? String }.getOrNull()
+        if (!url.isNullOrBlank()) {
+            BrowserSession.contextTarget =
+                WebContextTarget(WebContextTarget.Kind.VIDEO, videoUrl = url)
+        }
     }
 }
 
@@ -344,20 +393,14 @@ fun PrivateBrowserScreen(
     }
 
     /**
-     * Sends the page through the translate proxy into [target], in the tab already on screen, so
-     * Back afterwards returns to the untranslated page. The address is read back to the real site
-     * first when it is already translated, which makes choosing another language replace the
-     * translation instead of stacking one proxy on top of another.
+     * Translates the page this tab is showing, where it stands. The address, the cookies and the
+     * login session stay the site's own and only the words on screen are replaced, so the pages
+     * the old proxy could not fetch - logins, bot checks, pages built by script - translate like
+     * anywhere else. What leaves the phone is the page's text, and only after a language is
+     * picked.
      */
     fun translateActivePage(target: TranslateLanguage) {
-        val tabId = activeTabId ?: return
-        val current = urlMap[tabId]?.takeIf { it.isNotBlank() } ?: return
-        val source = TranslateUrl.originalUrl(current) ?: current
-        val proxied = TranslateUrl.proxyUrl(source, target) ?: run {
-            Toast.makeText(activity, "Halaman ini tidak bisa diterjemahkan", Toast.LENGTH_SHORT).show()
-            return
-        }
-        navigateCurrent(proxied)
+        activeTabId?.let { BrowserSession.translators[it] }?.translate(target)
     }
 
     fun shareUrl(text: String) {
@@ -506,6 +549,8 @@ fun PrivateBrowserScreen(
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 ShieldBlocker.resetTab(tabId)
                 errorMap.remove(tabId)
+                // The page the translator was working on is being torn down.
+                BrowserSession.translators[tabId]?.onPageStarted()
                 // The destination is known the moment the load starts, which is what lets the
                 // address bar keep up with the page instead of trailing a history commit.
                 url?.let { urlMap[tabId] = it }
@@ -514,6 +559,11 @@ fun PrivateBrowserScreen(
             override fun onPageFinished(view: WebView?, url: String?) {
                 // Settle on the final address after any redirects.
                 url?.let { urlMap[tabId] = it }
+                // A subframe finishing says nothing about the page as a whole, and only the main
+                // frame is translated anyway.
+                if (view != null && view.url == url) {
+                    BrowserSession.translators[tabId]?.onPageLoaded()
+                }
             }
 
             override fun onReceivedError(
@@ -612,7 +662,24 @@ fun PrivateBrowserScreen(
 
         wv.setDownloadListener { url, _, _, _, _ -> downloadToVault(url) }
 
+        // Remembers where the finger landed so a long-press the hit test cannot name (a video)
+        // can still be asked about by point. Nothing here is consumed: the page must keep
+        // scrolling and every tap must still reach it.
+        wv.setOnTouchListener { _, event ->
+            if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                BrowserSession.lastTouchX = event.x
+                BrowserSession.lastTouchY = event.y
+            }
+            false
+        }
+
         wv.setOnLongClickListener { handleWebLongPress(wv) }
+
+        // The tab keeps its translation choice across being parked in the background and woken
+        // again, so it is the tab's engine that is reused, not a new one per WebView.
+        val translator = BrowserSession.translators[tabId]
+        if (translator == null) BrowserSession.translators[tabId] = PageTranslator(activity, wv)
+        else translator.attach(wv)
 
         wv.loadUrl(BrowserSession.pendingUrls.remove(tabId) ?: START_PAGE)
         return wv
@@ -633,6 +700,7 @@ fun PrivateBrowserScreen(
             }
         }
         savedStates.remove(id)
+        BrowserSession.translators.remove(id)
         BrowserSession.pendingUrls.remove(id)
         desktopModes.remove(id)
         progressMap.remove(id)
@@ -815,6 +883,7 @@ fun PrivateBrowserScreen(
             IconButton(onClick = { activeWebView()?.reload() }) {
                 Icon(Icons.Rounded.Refresh, "Muat ulang")
             }
+            val translator = activeTabId?.let { BrowserSession.translators[it] }
             Box {
                 IconButton(onClick = { menuOpen = true }) {
                     Icon(Icons.Rounded.MoreVert, contentDescription = "Menu lainnya")
@@ -837,8 +906,17 @@ fun PrivateBrowserScreen(
                         leadingIcon = { Icon(Icons.Rounded.FindInPage, null) },
                     )
                     DropdownMenuItem(
-                        text = { Text("Terjemahkan halaman") },
-                        onClick = { menuOpen = false; showTranslateSheet = true },
+                        text = {
+                            Text(
+                                if (translator?.active == true) "Tampilkan bahasa asli"
+                                else "Terjemahkan halaman"
+                            )
+                        },
+                        onClick = {
+                            menuOpen = false
+                            if (translator?.active == true) translator.stop()
+                            else showTranslateSheet = true
+                        },
                         leadingIcon = { Icon(Icons.Rounded.Translate, null) },
                     )
                     DropdownMenuItem(
@@ -880,11 +958,17 @@ fun PrivateBrowserScreen(
             }
         }
 
-        if (loading) {
-            LinearProgressIndicator(
-                progress = { animatedProgress },
-                modifier = Modifier.fillMaxWidth(),
-            )
+        val translating = activeTabId?.let { BrowserSession.translators[it]?.busy } == true
+        if (loading || translating) {
+            // A page load has a length to show; translating does not, so that bar runs instead.
+            if (translating) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            } else {
+                LinearProgressIndicator(
+                    progress = { animatedProgress },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
         }
 
         AnimatedVisibility(
@@ -1091,9 +1175,12 @@ fun PrivateBrowserScreen(
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp),
             )
             Text(
-                "Halaman ini akan dikirim ke layanan penerjemah (Google Translate). Selama kamu " +
-                    "tidak memilih bahasa di bawah, tidak ada isi halaman yang keluar dari HP. " +
-                    "Situs yang butuh login bisa gagal tampil.",
+                "Hanya teks halaman ini yang dikirim ke layanan penerjemah (Google Translate), " +
+                    "dan hasilnya dipasang di halaman ini juga - alamat, cookie, dan login tetap " +
+                    "milik situsnya, jadi situs yang butuh login pun ikut diterjemahkan. Selama " +
+                    "kamu tidak memilih bahasa di bawah, tidak ada isi halaman yang keluar dari " +
+                    "HP. Teks di dalam bingkai dari situs lain dan halaman yang isinya bukan " +
+                    "tulisan (PDF atau gambar) tetap tampil apa adanya.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp),
@@ -1131,9 +1218,10 @@ fun PrivateBrowserScreen(
         val target = BrowserSession.contextTarget ?: WebContextTarget(WebContextTarget.Kind.LINK)
         val link = target.linkUrl
         val image = target.imageUrl
+        val video = target.videoUrl
         ModalBottomSheet(onDismissRequest = { BrowserSession.contextTarget = null }) {
             Text(
-                (link ?: image).orEmpty(),
+                (link ?: image ?: video).orEmpty(),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -1164,6 +1252,14 @@ fun PrivateBrowserScreen(
                     image?.let { ContextAction("Simpan gambar ke vault", Icons.Rounded.Download) { downloadToVault(it) } },
                     link?.let { ContextAction("Salin alamat link", Icons.Rounded.ContentCopy) { copyToClipboard(it) } },
                     link?.let { ContextAction("Bagikan link", Icons.Rounded.Share) { shareUrl(it) } },
+                )
+
+                WebContextTarget.Kind.VIDEO -> listOfNotNull(
+                    video?.let { ContextAction("Buka video", Icons.Rounded.OpenInBrowser) { navigateCurrent(it) } },
+                    video?.let { ContextAction("Buka video di tab baru", Icons.AutoMirrored.Rounded.OpenInNew) { openNewTab(it) } },
+                    video?.let { ContextAction("Unduh video ke vault", Icons.Rounded.Download) { downloadToVault(it) } },
+                    video?.let { ContextAction("Salin alamat video", Icons.Rounded.ContentCopy) { copyToClipboard(it) } },
+                    video?.let { ContextAction("Bagikan video", Icons.Rounded.Share) { shareUrl(it) } },
                 )
             }
             actions.forEach { action ->

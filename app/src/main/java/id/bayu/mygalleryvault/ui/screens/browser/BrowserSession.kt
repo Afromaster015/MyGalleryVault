@@ -61,6 +61,26 @@ object BrowserSession {
     /** What the last long-press landed on; null means no context menu is open. */
     var contextTarget: WebContextTarget? by mutableStateOf(null)
 
+    /**
+     * Counts long-presses. The address of a picture inside a link arrives on a callback, and a
+     * late answer must not reopen the menu of a press the user has already moved on from.
+     */
+    var contextToken: Int = 0
+        private set
+
+    fun nextToken(): Int {
+        contextToken++
+        return contextToken
+    }
+
+    /** Where the last finger went down, in view coordinates; the page is asked about that point
+     *  when the hit test cannot name what was pressed (a video). */
+    var lastTouchX: Float? = null
+    var lastTouchY: Float? = null
+
+    /** One in-page translation engine per tab, alive as long as that tab's WebView is. */
+    val translators = mutableMapOf<String, PageTranslator>()
+
     /** Match count for find-in-page; the listener is installed on the WebView. */
     var findMatches by mutableIntStateOf(0)
 
@@ -118,6 +138,8 @@ object BrowserSession {
         hostWhitelist.clear()
         activeTabId = null
         contextTarget = null
+        nextToken()
+        translators.clear()
         findMatches = 0
         runCatching {
             CookieManager.getInstance().removeAllCookies(null)

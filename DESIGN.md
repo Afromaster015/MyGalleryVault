@@ -298,15 +298,31 @@ begitu layar ditinggalkan sudah tidak berlaku, jadi dihapus.
 
 Catatan perilaku browser yang ditambahkan atas permintaan pemilik:
 
-- **Terjemahan halaman: pilih per halaman, bukan otomatis.** Menu ⋮ punya "Terjemahkan halaman";
-  memilih bahasa mengirim halaman itu ke layanan penerjemah (Google Translate) dan membuka hasilnya
-  di tab yang sama, jadi Back kembali ke halaman aslinya. Pemberitahuannya ditulis di sheet sebelum
-  bahasa dipilih, supaya tidak ada isi halaman yang keluar dari HP tanpa kamu memutuskan lebih dulu.
-  Konsekuensi yang harus disadari: begitu kamu menekan pilihan bahasa, isi halaman dan alamat IP
-  kamu memang lewat server pihak ketiga, dan situs yang butuh login bisa gagal tampil. Bahasa yang
-  dipilih disimpan sebagai pilihan terakhir, jadi tidak perlu memilih ulang tiap kali. Alamat
-  terjemahan yang sudah ada dibaca balik ke alamat aslinya sebelum diterjemahkan lagi, supaya tidak
-  ada proxy terjemahan bertumpuk di dalam proxy terjemahan.
+- **Terjemahan halaman: dipasang di halamannya sendiri, alamatnya tidak berpindah.** Menu ⋮ punya
+  "Terjemahkan halaman"; memilih bahasa mengganti teks di halaman yang sedang terbuka - cara yang
+  dipakai Chrome dan Brave - bukan mengalihkan halaman ke alamat proxy terjemahan seperti
+  sebelumnya. Alasannya nyata dan sudah terlihat di HP: cara proxy hanya bekerja selama Google bisa
+  mengambil ulang halaman itu sendiri, sehingga situs yang butuh login, situs berpemeriksaan bot,
+  dan situs yang isinya dibangun script sering gagal tampil, padahal di browser biasa halaman yang
+  sama bisa diterjemahkan. Dengan cara di halaman sendiri, alamat, cookie, dan sesi login tetap
+  milik situsnya; setelah aktif, baris menu yang sama berubah menjadi "Tampilkan bahasa asli".
+  Pemberitahuannya tetap ditulis di sheet sebelum bahasa dipilih, supaya tidak ada isi halaman yang
+  keluar dari HP tanpa kamu memutuskan lebih dulu. Yang dikirim ke layanan penerjemah hanya teksnya,
+  dan hanya setelah bahasa dipilih; halaman itu sendiri tidak pernah dilewatkan ke server mana pun,
+  jadi alamat IP tidak ikut berpindah jalur. Konsekuensi yang harus disadari: teks di dalam bingkai
+  (iframe) dari situs lain tidak ikut diterjemahkan karena bukan milik halaman ini, dan halaman yang
+  isinya bukan tulisan (PDF, gambar, canvas) tidak punya apa pun untuk diterjemahkan - keduanya
+  dilaporkan lewat pesan, bukan diam-diam. Bahasa yang dipilih disimpan sebagai pilihan terakhir,
+  dan sekali dipilih untuk sebuah tab, halaman berikutnya di tab itu ikut diterjemahkan sampai kamu
+  menghentikannya, supaya membaca berpindah-pindah halaman tidak berarti memilih bahasa berkali-kali.
+- **Menu tekan-lama mengambil alamat dari sumber yang benar.** Alamat tiap baris menu datang dari hit
+  test WebView, dengan satu pengecualian yang harus diingat: untuk gambar yang berada di dalam
+  sebuah link, `hitTestResult.extra` berisi GAMBARNYA, bukan alamat link-nya, dan alamat link hanya
+  bisa didapat dari `requestFocusNodeHref` (`"url"`, gambarnya di `"src"`). Sebelumnya `extra`
+  dipakai sebagai alamat link, sehingga "Buka link di tab baru" pada thumbnail video membuka gambar
+  thumbnail itu. Video yang tidak berada di dalam link tidak punya tipe hit test sendiri, jadi titik
+  tekan terakhir dicatat dan halaman ditanya lewat `document.elementFromPoint`; hanya alamat media
+  http/https yang dipakai, karena `blob:` bukan berkas yang bisa dibuka atau disimpan.
 - **Back di browser: halaman dulu, lalu tab, baru Gallery.** Back memakai riwayat halaman; kalau
   sudah di halaman pertama, tab ditutup seperti tombol X di daftar tab; hanya kalau tinggal satu tab
   terakhir Back keluar ke Gallery. Alasannya: tab tidak boleh hilang diam-diam selama masih ada tab

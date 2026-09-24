@@ -75,6 +75,9 @@ dependencies {
     implementation(libs.androidx.media3.ui)
 
     testImplementation(libs.junit)
+    // Real org.json for the translate answer parser: the android.jar stub returns defaults in
+    // unit tests, which would pass a test that proves nothing.
+    testImplementation(libs.json)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 }
