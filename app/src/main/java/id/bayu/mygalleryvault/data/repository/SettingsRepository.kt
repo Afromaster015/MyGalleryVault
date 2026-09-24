@@ -10,6 +10,7 @@ import id.bayu.mygalleryvault.domain.model.SettingsKeys
 import id.bayu.mygalleryvault.domain.model.ShakeSensitivity
 import id.bayu.mygalleryvault.domain.model.SubtitleEdge
 import id.bayu.mygalleryvault.domain.model.SubtitleStyle
+import id.bayu.mygalleryvault.domain.model.TranslateLanguage
 import id.bayu.mygalleryvault.domain.model.ViewMode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -71,6 +72,14 @@ class SettingsRepository(private val settingsDao: SettingsDao) {
             rows.firstOrNull { it.key == SettingsKeys.SHIELDS_DEFAULT_ON }?.value != "false"
         }
 
+    /** Target language of the browser's translate sheet. */
+    val translateTarget: Flow<TranslateLanguage> =
+        settingsDao.observeAll().map { rows ->
+            TranslateLanguage.fromName(
+                rows.firstOrNull { it.key == SettingsKeys.TRANSLATE_TARGET }?.value
+            )
+        }
+
     /** Gallery presentation: thumbnail grid (default) or detail list. */
     val homeViewMode: Flow<ViewMode> =
         settingsDao.observeAll().map { rows ->
@@ -129,6 +138,10 @@ class SettingsRepository(private val settingsDao: SettingsDao) {
 
     suspend fun setSearchEngine(engine: SearchEngine) {
         settingsDao.put(SettingEntity(SettingsKeys.SEARCH_ENGINE, engine.name))
+    }
+
+    suspend fun setTranslateTarget(language: TranslateLanguage) {
+        settingsDao.put(SettingEntity(SettingsKeys.TRANSLATE_TARGET, language.name))
     }
 
     suspend fun setShieldsDefaultOn(on: Boolean) {

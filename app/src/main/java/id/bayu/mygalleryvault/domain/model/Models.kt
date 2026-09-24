@@ -68,6 +68,7 @@ object SettingsKeys {
     const val BREAK_IN_PHOTOS = "break_in_photos"
     const val SEARCH_ENGINE = "search_engine"
     const val SHIELDS_DEFAULT_ON = "shields_default_on"
+    const val TRANSLATE_TARGET = "translate_target"
     const val SUBTITLE_SIZE_SP = "subtitle_size_sp"
     const val SUBTITLE_TEXT_COLOR = "subtitle_text_color"
     const val SUBTITLE_BG_COLOR = "subtitle_bg_color"
@@ -121,5 +122,35 @@ enum class SearchEngine(val label: String, val queryTemplate: String) {
                 )
             }
         }
+    }
+}
+
+/**
+ * Target languages offered by the browser's translate sheet. The codes are the ones Google
+ * Translate itself uses in its URLs, so they can be handed over unchanged.
+ */
+enum class TranslateLanguage(val label: String, val code: String) {
+    INDONESIAN("Indonesia", "id"),
+    ENGLISH("Inggris", "en"),
+    MALAY("Melayu", "ms"),
+    CHINESE_SIMPLIFIED("Tionghoa (Sederhana)", "zh-CN"),
+    JAPANESE("Jepang", "ja"),
+    KOREAN("Korea", "ko"),
+    ARABIC("Arab", "ar"),
+    HINDI("Hindi", "hi"),
+    SPANISH("Spanyol", "es"),
+    PORTUGUESE("Portugis", "pt"),
+    FRENCH("Prancis", "fr"),
+    GERMAN("Jerman", "de"),
+    DUTCH("Belanda", "nl"),
+    ITALIAN("Italia", "it"),
+    TURKISH("Turki", "tr"),
+    RUSSIAN("Rusia", "ru"),
+    THAI("Thailand", "th"),
+    VIETNAMESE("Vietnam", "vi");
+
+    companion object {
+        fun fromName(value: String?): TranslateLanguage =
+            entries.firstOrNull { it.name == value } ?: INDONESIAN
     }
 }

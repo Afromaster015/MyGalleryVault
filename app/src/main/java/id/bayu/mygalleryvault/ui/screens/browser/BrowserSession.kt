@@ -2,9 +2,13 @@ package id.bayu.mygalleryvault.ui.screens.browser
 
 import android.content.Context
 import android.os.Bundle
+import android.view.View
+import android.view.ViewGroup
 import android.webkit.CookieManager
+import android.webkit.WebChromeClient
 import android.webkit.WebView
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -46,12 +50,50 @@ object BrowserSession {
     var tabsBumper by mutableStateOf(0)
     val hostWhitelist = mutableSetOf<String>()
 
+    /**
+     * Everything a WebView opens or reports lives here for the same reason the WebViews do: a
+     * tab's WebView outlives the browser screen (switching to Gallery disposes the screen but
+     * not the tab). Listeners installed on a WebView keep running afterwards, so state they
+     * write into must not have died with the composition they were created in - otherwise
+     * long-press, find and fullscreen go silent the second time you visit the browser.
+     */
+
+    /** What the last long-press landed on; null means no context menu is open. */
+    var contextTarget: WebContextTarget? by mutableStateOf(null)
+
+    /** Match count for find-in-page; the listener is installed on the WebView. */
+    var findMatches by mutableIntStateOf(0)
+
+    /** HTML5 video fullscreen: the view the page handed over, its callback, and the
+     *  orientation to come back to when the video lets go. */
+    var fullscreenView: View? by mutableStateOf(null)
+    var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
+    var orientationBeforeFullscreen: Int = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+
+    /**
+     * Leaves fullscreen by handing the page its view back; WebView answers that with
+     * onHideCustomView, which is the single place that detaches and restores.
+     */
+    fun requestExitFullscreen() {
+        val callback = fullscreenCallback
+        if (callback != null) {
+            fullscreenCallback = null
+            runCatching { callback.onCustomViewHidden() }
+            return
+        }
+        fullscreenView?.let { view ->
+            (view.parent as? ViewGroup)?.removeView(view)
+            fullscreenView = null
+        }
+    }
+
     fun bump() {
         tabsBumper++
     }
 
     /** Destroys every WebView, clears engine storage, resets registries. */
     fun wipeAll(context: Context) {
+        requestExitFullscreen()
         for ((_, wv) in webViews) {
             runCatching {
                 wv.stopLoading()
@@ -75,6 +117,8 @@ object BrowserSession {
         shieldsOffTabs = emptySet()
         hostWhitelist.clear()
         activeTabId = null
+        contextTarget = null
+        findMatches = 0
         runCatching {
             CookieManager.getInstance().removeAllCookies(null)
             CookieManager.getInstance().flush()

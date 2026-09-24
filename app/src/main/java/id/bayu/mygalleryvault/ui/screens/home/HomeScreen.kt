@@ -3,6 +3,7 @@ package id.bayu.mygalleryvault.ui.screens.home
 import android.graphics.Bitmap
 import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -89,7 +90,6 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -254,19 +254,20 @@ fun HomeScreen(
     var folderDeleteTarget by remember { mutableStateOf<Pair<Long, String>?>(null) }
 
     // ---- multi-select mode (long-press to enter) ----
-    val selectedIds = remember { mutableStateListOf<Long>() }
-    val inSelection = selectedIds.isNotEmpty()
+    var selection by remember { mutableStateOf(GallerySelection.Empty) }
+    val inSelection = !selection.isEmpty
     var bulkDeleteConfirm by remember { mutableStateOf(false) }
-    var pendingDeleteIds by remember { mutableStateOf<List<Long>>(emptyList()) }
+    var pendingDelete by remember { mutableStateOf(GallerySelection.Empty) }
     var pendingExportIds by remember { mutableStateOf<List<Long>>(emptyList()) }
-    var pendingMoveIds by remember { mutableStateOf<List<Long>>(emptyList()) }
+    var pendingMove by remember { mutableStateOf(GallerySelection.Empty) }
     var bulkBusy by remember { mutableStateOf(false) }
     // A tracked import/export (progress dialog) also disables destructive actions.
     val busyWithTransfer = bulkBusy || transferProgress != null
 
-    fun toggleSelect(id: Long) {
-        if (selectedIds.contains(id)) selectedIds.remove(id) else selectedIds.add(id)
-    }
+    // Back leaves the selection first, the way every other screen in the app treats it, instead of
+    // dropping the whole Gallery (and the selection with it). Disabled while nothing is selected,
+    // so Back still navigates normally the rest of the time.
+    BackHandler(enabled = inSelection) { selection = GallerySelection.Empty }
 
     var newFolderDialog by rememberSaveable { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<Pair<Long, String>?>(null) }
@@ -311,7 +312,7 @@ fun HomeScreen(
                 )
             }
             vm.exportAllIntoDir(ids, treeUri) { ok, fail ->
-                selectedIds.clear()
+                selection = GallerySelection.Empty
                 Toast.makeText(
                     activity,
                     "Export: $ok berhasil" + if (fail > 0) ", $fail gagal" else "",
@@ -345,20 +346,17 @@ fun HomeScreen(
         entries.filterIsInstance<VaultEntry.File>().map { it.file.id }.toSet()
     }
 
-    /**
-     * Files and folders in a selection both move; the split exists only because the repository
-     * takes them as two lists. The selection is dropped afterwards because the moved items no
-     * longer sit in this level.
-     */
+    /** Files and folders move together; the two lists exist because the repository takes them
+     *  separately, and the selection already knows which is which. */
     fun commitMove(targetFolderId: Long?) {
-        val ids = pendingMoveIds
+        val pending = pendingMove
         vm.moveSelection(
-            fileIds = ids.filter { fileIdSet.contains(it) },
-            folderIds = ids.filterNot { fileIdSet.contains(it) },
+            fileIds = pending.fileIds.toList(),
+            folderIds = pending.folderIds.toList(),
             targetFolderId = targetFolderId,
         )
-        selectedIds.clear()
-        pendingMoveIds = emptyList()
+        selection = GallerySelection.Empty
+        pendingMove = GallerySelection.Empty
     }
 
     /**
@@ -367,9 +365,14 @@ fun HomeScreen(
      * the vault, so they are offered only when there is exactly one file, instead of half-working
      * on a multi-selection.
      */
-    val singleSelectedFile: VaultFile? = selectedIds.singleOrNull()?.let { id ->
-        entries.filterIsInstance<VaultEntry.File>().firstOrNull { it.file.id == id }?.file
-    }
+    val singleSelectedFile: VaultFile? =
+        if (selection.folderIds.isEmpty()) {
+            selection.fileIds.singleOrNull()?.let { id ->
+                entries.filterIsInstance<VaultEntry.File>().firstOrNull { it.file.id == id }?.file
+            }
+        } else {
+            null
+        }
 
     Scaffold(
         topBar = {
@@ -379,7 +382,7 @@ fun HomeScreen(
                 ),
                 title = {
                     Text(
-                        text = if (inSelection) "${selectedIds.size} dipilih"
+                        text = if (inSelection) "${selection.count} dipilih"
                         else folderName ?: "MyGalleryVault",
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -391,7 +394,7 @@ fun HomeScreen(
                 // No brand glyph in the bar: the title is the only thing up here now.
                 navigationIcon = {
                     if (inSelection) {
-                        IconButton(onClick = { selectedIds.clear() }) {
+                        IconButton(onClick = { selection = GallerySelection.Empty }) {
                             Icon(Icons.Rounded.Close, contentDescription = "Keluar seleksi")
                         }
                     } else if (folderId != null) {
@@ -404,25 +407,24 @@ fun HomeScreen(
                     if (inSelection) {
                         IconButton(
                             onClick = {
-                                pendingExportIds = selectedIds.filter { fileIdSet.contains(it) }
+                                pendingExportIds = selection.fileIds.toList()
                                 AutoLockManager.launchWithoutAutoLock {
                                     bulkExportTreeLauncher.launch(null)
                                 }
                             },
-                            enabled = !busyWithTransfer &&
-                                selectedIds.any { fileIdSet.contains(it) },
+                            enabled = !busyWithTransfer && selection.fileIds.isNotEmpty(),
                         ) {
                             Icon(Icons.Rounded.FileDownload, contentDescription = "Export terpilih")
                         }
                         IconButton(
-                            onClick = { pendingMoveIds = selectedIds.toList() },
+                            onClick = { pendingMove = selection },
                             enabled = !busyWithTransfer,
                         ) {
                             Icon(Icons.Rounded.DriveFileMove, contentDescription = "Pindahkan terpilih")
                         }
                         IconButton(
                             onClick = {
-                                pendingDeleteIds = selectedIds.toList()
+                                pendingDelete = selection
                                 bulkDeleteConfirm = true
                             },
                             enabled = !busyWithTransfer,
@@ -450,8 +452,7 @@ fun HomeScreen(
                                     enabled = !busyWithTransfer && fileIdSet.isNotEmpty(),
                                     onClick = {
                                         selectionMenuOpen = false
-                                        selectedIds.clear()
-                                        selectedIds.addAll(fileIdSet)
+                                        selection = GallerySelection.allFiles(fileIdSet)
                                     },
                                 )
                                 HorizontalDivider(Modifier.padding(vertical = 4.dp))
@@ -713,8 +714,8 @@ fun HomeScreen(
                         header = galleryHeader,
                         vm = vm,
                         selectionMode = inSelection,
-                        isSelected = { selectedIds.contains(it) },
-                        onToggleSelect = ::toggleSelect,
+                        isSelected = selection::isSelected,
+                        onToggleSelect = { entry -> selection = selection.toggle(entry) },
                         onOpenFolder = { id -> navController.navigate(Routes.folder(id)) },
                         onOpenFile = ::onFileClicked,
                     )
@@ -744,24 +745,25 @@ fun HomeScreen(
                                         vm = vm,
                                         name = entry.folder.name,
                                         id = entry.folder.id,
-                                        isSelected = selectedIds.contains(entry.folder.id),
+                                        isSelected = selection.isFolderSelected(entry.folder.id),
                                         selectionMode = inSelection,
                                         onClick = { id ->
-                                            if (inSelection) toggleSelect(id)
+                                            if (inSelection) selection = selection.toggleFolder(id)
                                             else navController.navigate(Routes.folder(id))
                                         },
-                                        onLongPress = { fid, _ -> toggleSelect(fid) },
+                                        onLongPress = { fid, _ -> selection = selection.toggleFolder(fid) },
                                     )
 
                                     is VaultEntry.File -> FileTile(
                                         file = entry.file,
                                         vm = vm,
-                                        isSelected = selectedIds.contains(entry.file.id),
+                                        isSelected = selection.isFileSelected(entry.file.id),
                                         selectionMode = inSelection,
                                         onClick = { f ->
-                                            if (inSelection) toggleSelect(f.id) else onFileClicked(f)
+                                            if (inSelection) selection = selection.toggleFile(f.id)
+                                            else onFileClicked(f)
                                         },
-                                        onLongPress = { f -> toggleSelect(f.id) },
+                                        onLongPress = { f -> selection = selection.toggleFile(f.id) },
                                     )
                                 }
                             }
@@ -906,11 +908,11 @@ fun HomeScreen(
     }
 
     if (bulkDeleteConfirm) {
-        val fileCount = pendingDeleteIds.count { fileIdSet.contains(it) }
-        val folderCount = pendingDeleteIds.size - fileCount
+        val fileCount = pendingDelete.fileIds.size
+        val folderCount = pendingDelete.folderIds.size
         AlertDialog(
             onDismissRequest = { if (!busyWithTransfer) bulkDeleteConfirm = false },
-            title = { Text("Hapus ${pendingDeleteIds.size} item?") },
+            title = { Text("Hapus ${pendingDelete.count} item?") },
             text = {
                 Text(
                     buildString {
@@ -925,9 +927,8 @@ fun HomeScreen(
                     enabled = !busyWithTransfer,
                     onClick = {
                         bulkBusy = true
-                        val targets = pendingDeleteIds.toList()
-                        val fileIds = targets.filter { fileIdSet.contains(it) }
-                        val folderIds = targets.filterNot { fileIdSet.contains(it) }
+                        val fileIds = pendingDelete.fileIds.toList()
+                        val folderIds = pendingDelete.folderIds.toList()
                         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
                             var fail = 0
                             runCatching {
@@ -937,10 +938,10 @@ fun HomeScreen(
                                         app.container.currentStack().repository.deleteFolderRecursive(it)
                                     }.onFailure { fail++ }
                                 }
-                            }.onFailure { fail = targets.size }
+                            }.onFailure { fail = fileIds.size + folderIds.size }
                             bulkBusy = false
                             bulkDeleteConfirm = false
-                            selectedIds.clear()
+                            selection = GallerySelection.Empty
                             Toast.makeText(
                                 activity,
                                 if (fail == 0) "Terhapus" else "Selesai dengan $fail gagal",
@@ -956,14 +957,14 @@ fun HomeScreen(
         )
     }
 
-    if (pendingMoveIds.isNotEmpty()) {
+    if (!pendingMove.isEmpty) {
         MoveToFolderDialog(
             app = app,
-            onDismiss = { pendingMoveIds = emptyList() },
+            onDismiss = { pendingMove = GallerySelection.Empty },
             onPickRoot = { commitMove(null) },
             onPick = { target -> commitMove(target) },
             // The folders being moved are not offered as their own destination.
-            excludeFolderIds = pendingMoveIds.filterNot { fileIdSet.contains(it) }.toSet(),
+            excludeFolderIds = pendingMove.folderIds,
         )
     }
 
@@ -1436,8 +1437,8 @@ private fun EntryDetailsList(
     entries: List<VaultEntry>,
     vm: HomeViewModel,
     selectionMode: Boolean,
-    isSelected: (Long) -> Boolean,
-    onToggleSelect: (Long) -> Unit,
+    isSelected: (VaultEntry) -> Boolean,
+    onToggleSelect: (VaultEntry) -> Unit,
     onOpenFolder: (Long) -> Unit,
     onOpenFile: (VaultFile) -> Unit,
     header: @Composable () -> Unit = {},
@@ -1452,10 +1453,7 @@ private fun EntryDetailsList(
                 is VaultEntry.File -> "c${entry.file.id}"
             }
         }) { entry ->
-            val selected = when (entry) {
-                is VaultEntry.Folder -> isSelected(entry.folder.id)
-                is VaultEntry.File -> isSelected(entry.file.id)
-            }
+            val selected = isSelected(entry)
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -1463,21 +1461,12 @@ private fun EntryDetailsList(
                     .combinedClickable(
                         onClick = {
                             when {
-                                selectionMode -> when (entry) {
-                                    is VaultEntry.Folder -> onToggleSelect(entry.folder.id)
-                                    is VaultEntry.File -> onToggleSelect(entry.file.id)
-                                }
-
+                                selectionMode -> onToggleSelect(entry)
                                 entry is VaultEntry.Folder -> onOpenFolder(entry.folder.id)
                                 entry is VaultEntry.File -> onOpenFile(entry.file)
                             }
                         },
-                        onLongClick = {
-                            when (entry) {
-                                is VaultEntry.Folder -> onToggleSelect(entry.folder.id)
-                                is VaultEntry.File -> onToggleSelect(entry.file.id)
-                            }
-                        },
+                        onLongClick = { onToggleSelect(entry) },
                     )
                     .semantics {
                         if (selectionMode) {

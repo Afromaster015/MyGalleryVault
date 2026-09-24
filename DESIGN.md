@@ -254,6 +254,10 @@ Navigasi bawah punya **tiga slot**, dan setiap slot harus punya tujuan nyata (R-
   vault, jadi keduanya hanya aktif ketika tepat satu file terpilih; folder atau pilihan banyak membuat
   keduanya tidak aktif, dan label "Untuk satu file" menerangkan alasannya. Pilihan tidak dilepas
   setelah Bagikan atau Simpan ke Download, karena isi di level ini memang tidak berubah.
+  Back keluar dari mode seleksi lebih dulu sebelum meninggalkan layar Gallery, dan pilihan
+  disimpan terpisah antara file dan folder: id file dan id folder berasal dari dua urutan angka
+  yang terpisah, jadi menyimpannya dalam satu daftar angka membuat folder bisa tertukar dengan
+  file bernomor sama, termasuk saat menentukan apa yang dipindah atau dihapus.
 - **App bar: judul saja.** Tidak ada glyph merek di app bar manapun. Judul di tengah dan agak bold.
   Di Gallery, search tampil sebagai bar tetap di bawah judul, bukan mode yang dibuka lalu ditutup,
   supaya mencari file cukup satu ketukan. Menu overflow tetap dipertahankan. Bar search melepas
@@ -291,6 +295,26 @@ begitu layar ditinggalkan sudah tidak berlaku, jadi dihapus.
 
 - **Tidak ada menu Favorites.** App ini memang tidak punya fitur favorit, jadi tidak ada yang
   disembunyikan atau dihapus.
+
+Catatan perilaku browser yang ditambahkan atas permintaan pemilik:
+
+- **Terjemahan halaman: pilih per halaman, bukan otomatis.** Menu ⋮ punya "Terjemahkan halaman";
+  memilih bahasa mengirim halaman itu ke layanan penerjemah (Google Translate) dan membuka hasilnya
+  di tab yang sama, jadi Back kembali ke halaman aslinya. Pemberitahuannya ditulis di sheet sebelum
+  bahasa dipilih, supaya tidak ada isi halaman yang keluar dari HP tanpa kamu memutuskan lebih dulu.
+  Konsekuensi yang harus disadari: begitu kamu menekan pilihan bahasa, isi halaman dan alamat IP
+  kamu memang lewat server pihak ketiga, dan situs yang butuh login bisa gagal tampil. Bahasa yang
+  dipilih disimpan sebagai pilihan terakhir, jadi tidak perlu memilih ulang tiap kali. Alamat
+  terjemahan yang sudah ada dibaca balik ke alamat aslinya sebelum diterjemahkan lagi, supaya tidak
+  ada proxy terjemahan bertumpuk di dalam proxy terjemahan.
+- **Back di browser: halaman dulu, lalu tab, baru Gallery.** Back memakai riwayat halaman; kalau
+  sudah di halaman pertama, tab ditutup seperti tombol X di daftar tab; hanya kalau tinggal satu tab
+  terakhir Back keluar ke Gallery. Alasannya: tab tidak boleh hilang diam-diam selama masih ada tab
+  lain, dan browser baru ditinggalkan saat memang tidak ada lagi yang bisa ditutup.
+- **Video fullscreen di browser dipasang ke window, bukan lewat Compose.** View dari pemutar situs
+  diserahkan ke window aplikasi (cara yang dipakai Chromium), sehingga tidak bisa terpasang dua kali
+  dan menumpuk. Layar diputar mengikuti ukuran video; kalau ukurannya belum terbaca, layar dibiarkan
+  seperti semula daripada dipaksa. Back keluar dari fullscreen lebih dulu sebelum menutup apa pun.
 
 ## 10. Yang dilarang di app ini
 
